@@ -18,6 +18,3 @@ Pillow
 matplotlib
 plotly
 
-pytest
-black
-flake8
