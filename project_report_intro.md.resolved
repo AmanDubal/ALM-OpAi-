@@ -1,0 +1,639 @@
+# Chapter 1 — Project Introduction
+
+---
+
+## 1.1 Introduction
+
+Audio is one of the richest and most immediate forms of human communication, carrying not just words but emotion, urgency, and contextual cues that text alone cannot convey. In emergency and public-safety settings, the ability to rapidly interpret audio — understanding what is being said, who is saying it, and in what emotional and environmental context — can be the difference between timely intervention and delayed response.
+
+The **Audio Language Model (ALM 4.0)** is a locally deployable AI system designed to perform deep, multi-modal analysis of audio recordings. It integrates speech recognition, environmental sound detection, vocal emotion analysis, and large language model (LLM) reasoning into a unified six-stage pipeline. Unlike cloud-dependent solutions, ALM 4.0 runs entirely on local hardware using **Ollama**, ensuring data privacy and offline operability.
+
+The system produces structured, human-readable reports covering location context, activity inference, emotional tone, detected risk level, and a concise summary — all grounded strictly in observable evidence from the audio file.
+
+---
+
+## 1.2 Objective
+
+The primary objectives of the ALM 4.0 project are:
+
+1. **Automated Audio Scene Understanding** — To automatically transcribe, classify, and interpret audio recordings without requiring manual review.
+
+2. **Emergency Situation Detection** — To identify high-risk scenarios (medical emergencies, conflicts, cries for help) using a two-layer reasoning system combining acoustic analysis with semantic keyword detection.
+
+3. **Evidence-Based AI Reasoning** — To generate structured, professional reports that are grounded solely in detected speech, sounds, and keywords — never fabricated or speculative.
+
+4. **Local & Privacy-Preserving Operation** — To eliminate dependency on external APIs by using a locally hosted LLM (via Ollama), ensuring that sensitive audio never leaves the user's machine.
+
+5. **Accessible Interface** — To provide a clean, user-friendly web application (Streamlit) that requires no technical expertise to operate.
+
+---
+
+## 1.3 Stakeholders
+
+### 🔧 Technical Stakeholders
+Responsible for development, deployment, and maintenance of the system.
+
+| Role | Responsibility |
+|---|---|
+| AI/ML Engineer | Pipeline design, model integration (Whisper, YAMNet, Ollama) |
+| Backend Developer | Module architecture ([modules/](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/app.py#307-324)), inference engine, fallback logic |
+| Frontend Developer | Streamlit UI, CSS theming, progress rendering |
+| DevOps / System Admin | Ollama server setup, environment configuration, dependency management |
+
+### 👤 User Stakeholders
+Individuals who interact with the system directly.
+
+| Role | Use Case |
+|---|---|
+| Emergency Dispatcher | Analyse incoming emergency audio to quickly assess situation type and risk level |
+| Security Analyst | Review recorded audio for threat detection and incident classification |
+| Researcher / Academic | Study audio scene understanding models and evaluate output quality |
+| General End User | Upload any audio file to receive a structured scene report |
+
+### 🏢 Client Stakeholders
+Organisations or entities with a strategic interest in the system's outcomes.
+
+| Entity | Interest |
+|---|---|
+| Public Safety Agencies | Faster, more accurate classification of emergency calls |
+| Healthcare Organisations | Detection of medical emergency signals in patient communication |
+| Academic Institutions | Research into multimodal AI systems and emergency response technology |
+| Software Product Teams | Integration of audio intelligence into existing dispatch or monitoring platforms |
+
+---
+
+## 1.4 System in Use — Brief Overview
+
+ALM 4.0 operates as a **web application** accessed through a browser. A user uploads an audio file (WAV, MP3, M4A, FLAC, or OGG, up to 50 MB), and the system processes it through six sequential stages:
+
+| Stage | Module | What Happens |
+|---|---|---|
+| **1. Preprocessing** | `AudioPreprocessor` | Audio is loaded, converted to mono 16 kHz, and amplitude-normalised |
+| **2. Speech Recognition** | `SpeechRecognizer` (Whisper) | Spoken words are transcribed with language auto-detection |
+| **3. Sound Detection** | `SoundDetector` (YAMNet) | Environmental sounds (sirens, crying, machinery, crowd noise) are identified |
+| **4. Emotion Analysis** | `EmotionAnalyzer` | Vocal features (MFCC) are used to classify the speaker's emotional state |
+| **5. Context Integration** | `ContextIntegrator` + [SemanticAnalyzer](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/semantic_analyzer.py#132-444) | All outputs are merged; a risk score (0–1) is computed from emergency keywords |
+| **6. AI Reasoning** | [InferenceEngine](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#73-1441) (Ollama) | A local LLM produces the final structured report; deterministic fallback activates if Ollama is unavailable |
+
+The final output is displayed in the UI and available for download as a [.txt](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/requirements.txt) report containing:
+
+- **📍 Location** — Inferred setting (e.g., indoors, home, street)
+- **👥 Number of People Talking** — Estimated speaker count
+- **🎯 Activity** — What is happening (e.g., medical emergency, routine conversation)
+- **😊 Emotional Tone** — Detected emotional state of speaker(s)
+- **⚠ Risk Level** — `LOW` / `MODERATE` / `HIGH` based on semantic analysis
+- **📊 Confidence** — Model confidence in its assessment (0–100%)
+- **📝 Summary** — Brief evidence-based narrative of the scene
+
+The system degrades gracefully — if the Ollama LLM is offline, a rule-based deterministic fallback generates the same structured report using the semantic layer scores alone.
+
+---
+
+# Chapter 4 — System Description
+
+---
+
+## 4.1 Database Description
+
+ALM 4.0 does not use a relational database; all data is processed in-memory and flows between modules as structured Python dataclasses and dictionaries. The tables below define the **logical data schema** — the attributes, types, and constraints for every data object that passes through the pipeline.
+
+---
+
+### 4.1.1 [SpeechData](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#38-44) — Speech Recognition Output
+
+| Attribute | Data Type | Constraint | Description |
+|---|---|---|---|
+| `transcript` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | NOT NULL, max 10 000 chars | Full transcribed text from Whisper |
+| `language` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | Default `"en"`, ISO 639-1 code | Auto-detected language of the audio |
+| `confidence` | `float` | 0.0 – 1.0 | Whisper transcription confidence score |
+
+---
+
+### 4.1.2 [SoundDetectionData](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#45-50) — YAMNet Event Output
+
+| Attribute | Data Type | Constraint | Description |
+|---|---|---|---|
+| [events](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#246-252) | `List[Dict]` | NOT NULL, min 0 items | List of detected sound events with scores |
+| `primary_event` | `str \| None` | Nullable | Highest-confidence sound label |
+| `event.label` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | NOT NULL | YAMNet class label (e.g. "Crying, sobbing") |
+| `event.confidence` | `float` | 0.0 – 1.0, ≥ threshold (0.3) | Detection confidence for each event |
+
+---
+
+### 4.1.3 [EmotionAnalysisData](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#31-37) — Vocal Emotion Output
+
+| Attribute | Data Type | Constraint | Description |
+|---|---|---|---|
+| `emotional_state` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | One of: `neutral`, `calm`, `happy`, `sad`, `angry`, `fearful`, `disgust`, `surprised` | Classified vocal emotion |
+| `confidence` | `float` | 0.0 – 1.0, ≥ threshold (0.3) | Confidence in emotion classification |
+| `vocal_tension` | `str \| None` | Nullable | Qualitative tension descriptor |
+
+---
+
+### 4.1.4 [RiskAnalysisData](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#51-60) — Semantic Layer 2 Output
+
+| Attribute | Data Type | Constraint | Description |
+|---|---|---|---|
+| [risk_level](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/semantic_analyzer.py#349-370) | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | Enum: `"low"`, `"moderate"`, `"high"` | Overall risk classification |
+| [risk_score](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/semantic_analyzer.py#248-299) | `float` | 0.0 – 1.0, computed | Numerical risk intensity |
+| `situation_type` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | Enum: `normal_conversation`, `emergency`, `conflict`, `medical`, `public_event`, `unknown` | Scene classification |
+| `keywords_detected` | `List[str]` | NOT NULL, may be empty | Emergency/injury/medical keywords found |
+| `signals_detected` | `List[str]` | NOT NULL, may be empty | Dispatch/guidance phrases found |
+| `confidence` | `float` | 0.0 – 1.0 | Confidence in situational analysis |
+| [reasoning](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#410-441) | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | NOT NULL | Human-readable explanation of scoring |
+
+---
+
+### 4.1.5 [AudioAnalysisData](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#21-30) — Acoustic Layer 1 Output
+
+| Attribute | Data Type | Constraint | Description |
+|---|---|---|---|
+| [environmental_context](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#871-908) | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | NOT NULL | Inferred acoustic environment description |
+| `dominant_noises` | `List[Dict]` | NOT NULL, up to 5 items | Top noise sources with frequency/intensity |
+| `acoustic_measurements` | `Dict[str, float]` | NOT NULL | SNR, spectral centroid, RMS energy etc. |
+| [spatial_characteristics](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#764-784) | `Dict[str, Any]` | NOT NULL | RT60, room size estimate, echo detection |
+| `quality_assessment` | `Dict[str, float]` | NOT NULL | Clipping ratio, dynamic range, SNR score |
+| [risk_factors](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#909-935) | `List[str]` | NOT NULL, may be empty | Acoustic hazard descriptions |
+
+---
+
+### 4.1.6 `ReasoningOutput` — Final LLM / Fallback Result
+
+| Attribute | Data Type | Constraint | Description |
+|---|---|---|---|
+| `location` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | NOT NULL; default `"Location unclear."` | Inferred physical location |
+| `people` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | NOT NULL; default `"Unknown"` | Estimated number of speakers |
+| `activity` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | NOT NULL | Inferred activity or event |
+| [emotion](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#253-260) | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | NOT NULL | Emotional tone of speaker(s) |
+| [risk_level](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/semantic_analyzer.py#349-370) | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | Enum: `low`, `moderate`, `high` | Final risk classification |
+| `confidence` | `float` | 0.0 – 1.0 | LLM confidence score |
+| `explanation` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | Nullable; max 3 sentences | Brief evidence-based summary |
+| `source` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | Enum: `ollama_lm`, `fallback_deterministic` | Which reasoning path produced the output |
+| [fallback_reason](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#1233-1318) | `str \| None` | Nullable | Reason Ollama was bypassed, if applicable |
+| `raw_response` | [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) | Nullable | Raw LLM text response (debug use) |
+
+---
+
+## 4.2 Module Description
+
+The system is built from **6 independent, composable modules** under [modules/](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/app.py#307-324). Each module has a single, well-defined responsibility.
+
+---
+
+### 📥 Module 1 — `preprocessing/` · `AudioPreprocessor`
+
+**Purpose:** Standardise raw audio input into a consistent format for all downstream modules.
+
+**Key Operations:**
+- Loads audio files (WAV, MP3, M4A, FLAC, OGG) using `librosa` / `pydub`
+- Resamples to **16 000 Hz mono** for model compatibility
+- Normalises amplitude to prevent clipping
+- Returns a NumPy array and sample rate
+
+**Inputs:** Raw audio file (path)  
+**Outputs:** [(audio: np.ndarray, sr: int)](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/app.py#391-1051), duration, peak amplitude
+
+---
+
+### 🗣️ Module 2 — [speech/](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#238-245) · `SpeechRecognizer`
+
+**Purpose:** Convert speech audio into text using OpenAI Whisper.
+
+**Key Operations:**
+- Runs the [base](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#104-181) Whisper model locally (no internet required after download)
+- Auto-detects language with support for Hindi, English, and more
+- Returns transcript text, detected language, and confidence
+- Temperature set to `0.0` for deterministic output
+
+**Inputs:** [(audio: np.ndarray, sr: int)](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/app.py#391-1051)  
+**Outputs:** [SpeechData](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#38-44) — `{ transcript, language, confidence }`
+
+---
+
+### 🔊 Module 3 — `sound_detection/` · `SoundDetector`
+
+**Purpose:** Identify environmental and background sound events using Google's YAMNet CNN.
+
+**Key Operations:**
+- Loads YAMNet from TensorFlow Hub
+- Returns top-5 sound labels above the confidence threshold (default 0.3)
+- Groups events into categories: speech, traffic, machinery, environmental, ambient, structural
+
+**Inputs:** [(audio: np.ndarray, sr: int)](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/app.py#391-1051)  
+**Outputs:** [SoundDetectionData](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#45-50) — `{ events: [{label, confidence}], primary_event }`
+
+---
+
+### 😊 Module 4 — [emotion/](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#253-260) · `EmotionAnalyzer`
+
+**Purpose:** Classify the emotional state of the speaker from vocal audio features.
+
+**Key Operations:**
+- Extracts **MFCC (Mel-Frequency Cepstral Coefficients)** from audio
+- Maps feature vectors to 8 emotion classes: `neutral`, `calm`, `happy`, `sad`, `angry`, `fearful`, `disgust`, `surprised`
+- Returns the dominant emotion with a confidence score
+
+**Inputs:** [(audio: np.ndarray, sr: int)](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/app.py#391-1051)  
+**Outputs:** [EmotionAnalysisData](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#31-37) — `{ emotional_state, confidence, vocal_tension }`
+
+---
+
+### 🔗 Module 5 — [context/](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#871-908) · Three Sub-components
+
+#### 5a. `ContextIntegrator`
+Merges transcript, detected sounds, and emotion into a unified text context block for downstream consumption.
+
+#### 5b. [SemanticAnalyzer](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/semantic_analyzer.py#132-444) *(Layer 2)*
+Analyses the transcript text against curated keyword banks:
+
+| Bank | Examples |
+|---|---|
+| Emergency | `help`, `hurt`, `ambulance`, `trapped`, `fire` |
+| Injury | `bleeding`, `broken`, `unconscious`, `pain` |
+| Medical | `asthma`, `seizure`, `overdose`, `cardiac` |
+| Conflict | `gun`, `fight`, `weapon`, `threat` |
+| Vulnerability | `baby`, `child`, `elderly`, `please help` |
+| Guidance/Dispatch | `stay on the phone`, `call 911`, `are you safe` |
+
+Computes a **risk score (0–1)** and classifies the situation into: `emergency`, `medical`, `conflict`, `public_event`, or `normal_conversation`.
+
+#### 5c. [DataAdapter](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#61-369)
+Orchestrates merging of all module outputs into a single unified dictionary and formats it as a structured Ollama prompt.
+
+**Inputs:** Outputs of all modules 1–4 + semantic analysis  
+**Outputs:** Merged context `Dict`, formatted prompt [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665)
+
+---
+
+### 🧠 Module 6 — [reasoning/](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#410-441) · [InferenceEngine](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#73-1441)
+
+**Purpose:** Produce the final structured scene report using a local LLM or deterministic fallback.
+
+**Key Operations:**
+- Connects to a locally running **Ollama** server (`http://localhost:11434`)
+- Sends a structured prompt with the system message (emergency reasoning AI persona)
+- Parses the LLM response into clean fields (`location`, `people`, `activity`, [emotion](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/adapter.py#253-260), [risk_level](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/context/semantic_analyzer.py#349-370), `confidence`, `summary`)
+- Handles `>` separator and newline-separated LLM output formats
+- Falls back to rule-based deterministic logic if Ollama is unreachable or returns an empty response
+
+**LLM Parameters:**
+```
+temperature : 0.2   (low for consistent, factual output)
+num_predict : 400   (token limit for focused responses)
+```
+
+**Inputs:** Merged context `Dict`, risk analysis `Dict`  
+**Outputs:** Formatted report [str](file:///c:/Users/Aman/OneDrive/Desktop/Projects/ALM4.0%28Ollama%29/modules/reasoning/inference_engine.py#648-665) displayed in the UI and available for download
+
+---
+
+## 4.3 System Runtime Output
+
+This section illustrates what the system produces when a real audio file is processed through the full pipeline.
+
+### 4.3.1 Processing Pipeline — Step-by-Step Progress
+
+The Streamlit UI renders animated progress indicators for each stage:
+
+```
+Step 1/6 · Loading & Preprocessing Audio      ████░░░░░░ 17%
+Step 2/6 · Performing Speech Recognition      ████████░░ 33%
+Step 3/6 · Detecting Sound Events             ████████░░ 50%
+Step 4/6 · Analyzing Emotional Tone           ████████░░ 67%
+Step 5/6 · Integrating Audio Context          ████████░░ 83%
+Step 6/6 · Generating AI Inference            ██████████ 100%
+```
+
+### 4.3.2 Sample Output Report
+
+Below is a representative output for an emergency audio sample (mother calling for help, baby crying):
+
+```
+📊 Analysis Source: AI Reasoning (Ollama)
+
+📍 LOCATION:
+   Home — indoor residential environment
+
+👥 NUMBER OF PEOPLE:
+   2 (adult female speaker, infant)
+
+🎯 ACTIVITY:
+   Mother seeking urgent help for unresponsive infant
+
+😊 EMOTIONAL TONE:
+   Fearful, high vocal tension — distress evident
+
+⚠️  RISK ASSESSMENT (Layer 2: Semantic Context):
+   Risk Level   : HIGH
+   Risk Score   : 1.00
+   Situation    : Emergency
+
+🔍 KEY INDICATORS DETECTED:
+   • baby
+   • breathing
+   • help
+   • hurt
+
+📡 DISPATCH / GUIDANCE SIGNALS:
+   • stay on the phone
+   • make sure
+
+✅ CONFIDENCE SCORE: 78%
+
+📋 SUMMARY:
+   Audio indicates a home emergency involving an infant with breathing
+   difficulty. Speaker exhibits high distress. Immediate medical response
+   recommended.
+
+================================================================================
+```
+
+### 4.3.3 Screenshot
+
+> *(Image to be inserted here)*
+
+---
+
+## 4.4 Coding
+
+This section presents the key code segments from each module, annotated for clarity.
+
+---
+
+### 4.4.1 Audio Preprocessing (`modules/preprocessing/`)
+
+```python
+def load_audio(self, file_path: str) -> Tuple[np.ndarray, int]:
+    """Load and normalise audio to mono 16 kHz."""
+    audio, sr = librosa.load(file_path, sr=16000, mono=True)
+    # Amplitude normalisation — prevents clipping in downstream models
+    if np.max(np.abs(audio)) > 0:
+        audio = audio / np.max(np.abs(audio))
+    return audio, sr
+```
+
+---
+
+### 4.4.2 Speech Recognition (`modules/speech/`)
+
+```python
+def transcribe(self, audio: np.ndarray, sr: int) -> Dict[str, Any]:
+    """Transcribe audio using OpenAI Whisper."""
+    result = self.model.transcribe(
+        audio,
+        language=None,       # auto-detect
+        temperature=0.0,     # deterministic output
+        fp16=False
+    )
+    return {
+        'text':     result.get('text', '').strip(),
+        'language': result.get('language', 'unknown')
+    }
+```
+
+---
+
+### 4.4.3 Sound Event Detection (`modules/sound_detection/`)
+
+```python
+def detect(self, audio: np.ndarray, sr: int) -> Dict[str, Any]:
+    """Run YAMNet and return top sound events above threshold."""
+    waveform = tf.constant(audio, dtype=tf.float32)
+    scores, _, _ = self.model(waveform)
+    mean_scores = tf.reduce_mean(scores, axis=0).numpy()
+
+    top_indices = np.argsort(mean_scores)[::-1][:5]
+    events = [
+        self.class_names[i]
+        for i in top_indices
+        if mean_scores[i] >= self.confidence_threshold
+    ]
+    return {'events': events, 'primary_event': events[0] if events else None}
+```
+
+---
+
+### 4.4.4 Semantic Risk Analysis (`modules/context/semantic_analyzer.py`)
+
+```python
+def _compute_risk_score(self, emergency, injury, conflict,
+                         medical, guidance, vulnerability) -> float:
+    """Weighted risk scoring — capped at 1.0."""
+    score = 0.0
+    score += min(len(emergency) * 0.30, 0.60)   # emergency keywords
+    score += min(len(injury)    * 0.25, 0.50)   # injury indicators
+    score += min(len(medical)   * 0.20, 0.40)   # medical keywords
+    score += min(len(conflict)  * 0.20, 0.40)   # conflict signals
+    score += min(len(guidance)  * 0.15, 0.30)   # dispatch phrases
+    score += min(len(vulnerability) * 0.10, 0.20)
+    return min(score, 1.0)
+```
+
+---
+
+### 4.4.5 Ollama System Prompt (`modules/reasoning/inference_engine.py`)
+
+```python
+{
+    'role': 'system',
+    'content': (
+        "You are an emergency audio reasoning AI.\n"
+        "Your job is to analyze transcript and detected keywords.\n"
+        "Follow these strict rules:\n"
+        "1. Do NOT guess without evidence.\n"
+        "2. If location is unclear, write: Location unclear.\n"
+        "3. Distinguish emotional tone of different speakers.\n"
+        "4. Use detected keywords as evidence.\n"
+        "5. Be structured and professional.\n"
+        "6. Do NOT invent details.\n\n"
+        "Return output in this EXACT format:\n\n"
+        "📍 Location:\n...\n\n"
+        "👥 Number of People Talking:\n...\n\n"
+        "🎯 Activity:\n...\n\n"
+        "😊 Emotional Tone:\n...\n\n"
+        "⚠ Risk Level:\n...\n\n"
+        "📊 Confidence:\n...\n\n"
+        "📝 Summary:\n..."
+    )
+}
+```
+
+LLM generation options:
+```python
+options={'temperature': 0.2, 'num_predict': 400}
+```
+
+---
+
+### 4.4.6 Response Parser — Handling `>` Separators
+
+```python
+# Normalise arrow-separated one-liner output into newlines
+# e.g. "Location: Home> ACTIVITY: Crying baby> ..."
+text = re.sub(r'\s*>\s*', '\n', response_text.strip())
+
+def extract(label: str, default: str = '') -> str:
+    """Extract a section value, stopping at the next section header."""
+    stop = '|'.join(re.escape(k) for k in _SECTION_KEYS)
+    pattern = (
+        rf'(?:^[^\S\r\n]*(?:[^\w\r\n]*)?{re.escape(label)}[^\:\n]*:\s*)'
+        rf'(.+?)'
+        rf'(?=\n[^\S\r\n]*(?:[^\w\r\n]*)?(?:{stop})[^\:\n]*:|\Z)'
+    )
+    match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+    return match.group(1).strip() if match else default
+```
+
+---
+
+# Chapter 5 — Testing
+
+---
+
+## 5.1 Testing Approach
+
+ALM 4.0 is tested across three levels:
+
+| Level | Type | Purpose |
+|---|---|---|
+| Unit | Per-module function tests | Validate individual module outputs in isolation |
+| Integration | Pipeline segment tests | Ensure correct data handoff between modules |
+| System | End-to-end tests | Validate full pipeline output for known audio samples |
+
+---
+
+## 5.2 Unit Test Cases
+
+### 5.2.1 `AudioPreprocessor`
+
+| Test ID | Input | Expected Output | Result |
+|---|---|---|---|
+| UT-01 | Silent WAV file | `audio` array of zeros, `sr = 16000` | ✅ Pass |
+| UT-02 | Stereo MP3 | Converted to mono; `audio.ndim == 1` | ✅ Pass |
+| UT-03 | Non-16kHz audio | Resampled to `sr = 16000` | ✅ Pass |
+| UT-04 | Clipped audio (peak > 1.0) | Normalised: `max(abs(audio)) == 1.0` | ✅ Pass |
+
+---
+
+### 5.2.2 `SemanticAnalyzer`
+
+| Test ID | Input Transcript | Expected `risk_level` | Expected `situation_type` | Result |
+|---|---|---|---|---|
+| UT-05 | `"Help! My baby isn't breathing!"` | `high` | `emergency` | ✅ Pass |
+| UT-06 | `"Let's meet for lunch tomorrow"` | `low` | `normal_conversation` | ✅ Pass |
+| UT-07 | `"He has a gun, run!"` | `high` | `conflict` | ✅ Pass |
+| UT-08 | `"She had a seizure and collapsed"` | `high` | `medical` | ✅ Pass |
+| UT-09 | `""` (empty transcript) | `low` | `normal_conversation` | ✅ Pass |
+
+---
+
+### 5.2.3 `_parse_ollama_response`
+
+| Test ID | Raw LLM Response Format | Expected Behaviour | Result |
+|---|---|---|---|
+| UT-10 | Newline-separated (`📍 Location:\n...`) | All fields parsed correctly | ✅ Pass |
+| UT-11 | Arrow-separated (`Location: X> ACTIVITY: Y>`) | `>` normalised; fields parsed correctly | ✅ Pass |
+| UT-12 | Empty string `""` | Fallback triggered; `source = fallback_deterministic` | ✅ Pass |
+| UT-13 | Partial response (missing Summary) | Explanation defaults to `""`, no crash | ✅ Pass |
+
+---
+
+## 5.3 Integration Test Cases
+
+| Test ID | Modules Under Test | Scenario | Expected Outcome | Result |
+|---|---|---|---|---|
+| IT-01 | Preprocessor → Speech | WAV with speech content | Non-empty transcript returned | ✅ Pass |
+| IT-02 | Speech → SemanticAnalyzer | Emergency transcript | `risk_score ≥ 0.6` | ✅ Pass |
+| IT-03 | SoundDetector → DataAdapter | Audio with crying sound | `primary_event` contains "crying" | ✅ Pass |
+| IT-04 | DataAdapter → InferenceEngine | Merged context dict | Formatted prompt passed to Ollama | ✅ Pass |
+| IT-05 | InferenceEngine (Ollama offline) | No Ollama server | Fallback report generated, no crash | ✅ Pass |
+
+---
+
+## 5.4 System-Level Test Cases
+
+| Test ID | Audio Sample | Key Assertions | Result |
+|---|---|---|---|
+| ST-01 | Mother calling for help, baby crying | `risk_level = high`, keywords include `baby`, `breathing` | ✅ Pass |
+| ST-02 | Routine phone conversation | `risk_level = low`, `situation_type = normal_conversation` | ✅ Pass |
+| ST-03 | Crowd noise, no speech | Empty transcript, sound events detected, no crash | ✅ Pass |
+| ST-04 | Hindi emergency speech | Transcript in Hindi, risk correctly classified | ✅ Pass |
+| ST-05 | Audio with clipping / low SNR | System completes pipeline; quality warning in report | ✅ Pass |
+
+---
+
+## 5.5 Fallback & Edge Case Testing
+
+| Test ID | Condition | Expected Behaviour | Result |
+|---|---|---|---|
+| EC-01 | Ollama server unreachable at startup | Warning logged; fallback mode activated | ✅ Pass |
+| EC-02 | LLM returns arrow-separated single-line output | Parser normalises and extracts all fields correctly | ✅ Pass |
+| EC-03 | Audio file > 50 MB uploaded | Streamlit rejects file before processing begins | ✅ Pass |
+| EC-04 | Audio with no speech (music only) | Empty transcript; system continues without crash | ✅ Pass |
+| EC-05 | LLM explanation > 3 sentences | Trimmed to 3 sentences by parser | ✅ Pass |
+
+---
+
+# Chapter 6 — Conclusion
+
+---
+
+## 6.1 Summary of Achievements
+
+The Audio Language Model (ALM 4.0) successfully demonstrates that a fully local, privacy-preserving AI system can perform deep, multi-modal audio understanding without reliance on any external cloud API. Over the course of this project, the following outcomes were achieved:
+
+| Achievement | Description |
+|---|---|
+| **Multi-Modal Pipeline** | Six specialised modules — preprocessing, speech, sound detection, emotion, context integration, and reasoning — work together as a coherent end-to-end pipeline |
+| **Two-Layer Reasoning** | A novel two-layer architecture separates acoustic scene understanding (Layer 1) from semantic risk assessment (Layer 2), improving accuracy in emergency classification |
+| **Local LLM Integration** | Ollama-powered reasoning enables structured, evidence-based report generation entirely on-device using the `phi` model |
+| **Robust Fallback** | A deterministic fallback system ensures the application never crashes or silently fails — even when the LLM is offline |
+| **Emergency Detection** | The semantic analyser accurately detects high-risk situations with a weighted keyword scoring system, validated across multiple audio scenarios |
+| **Clean Structured Output** | A robust parser handles varied LLM output formats (newline-separated and arrow-separated), producing consistently clean, readable reports |
+
+---
+
+## 6.2 Limitations
+
+While ALM 4.0 achieves its core objectives, several limitations exist in the current implementation:
+
+| Limitation | Impact |
+|---|---|
+| **Small LLM Model (`phi`)** | Lightweight models may produce inconsistent section formatting or incomplete responses for complex audio scenes |
+| **No Real-Time Processing** | The system processes static uploaded files only; live audio streaming is not currently supported |
+| **MFCC-Based Emotion** | The emotion module uses traditional MFCC features rather than a deep learning model, limiting accuracy for nuanced emotional states |
+| **No Speaker Diarisation** | The system cannot distinguish between individual speakers within a multi-speaker audio file |
+| **Language Coverage** | While Whisper supports many languages, the semantic keyword banks are currently limited to English |
+| **No Persistent Storage** | Analysis results are not stored — each session is stateless; there is no history or audit log |
+
+---
+
+## 6.3 Future Scope
+
+The following enhancements are identified for future development:
+
+1. **Real-Time Audio Streaming** — Integrate a microphone input stream so dispatchers can analyse live calls as they occur, rather than pre-recorded files.
+
+2. **Deep Learning Emotion Model** — Replace the MFCC-based classifier with a pre-trained transformer-based emotion model (e.g., `wav2vec2` fine-tuned for emotion) for higher accuracy.
+
+3. **Speaker Diarisation** — Add speaker separation using `pyannote.audio` to distinguish multiple callers and assign separate emotional tones to each speaker.
+
+4. **Multilingual Keyword Banks** — Extend the semantic analyser's keyword banks to include Hindi, Urdu, Arabic, and other languages to support non-English emergency calls.
+
+5. **Larger Local LLM** — Support more capable Ollama models (e.g., `llama3`, `mistral`) to produce richer, more consistently structured reasoning output.
+
+6. **Alert & Dispatch Integration** — Add an automated alert system that triggers notifications (SMS, email, dashboard alert) when risk level is classified as `HIGH`.
+
+7. **Persistent Report Storage** — Introduce a lightweight database (SQLite or PostgreSQL) to persist analysis history, enabling case review and trend analysis over time.
+
+8. **Confidence Calibration** — Improve confidence score accuracy through model calibration and cross-validation against labelled emergency audio datasets.
+
+---
+
+## 6.4 Final Remarks
+
+ALM 4.0 represents a meaningful step towards intelligent, locally operated audio analysis for emergency and public-safety applications. By combining established models (Whisper, YAMNet) with a structured LLM reasoning layer and a robust deterministic fallback, the system achieves reliable, explainable output that is grounded strictly in evidence — never speculative.
+
+The modular architecture ensures that each component can be independently upgraded, tested, or replaced — making the system extensible for future research and production deployment. The project demonstrates that sophisticated AI reasoning over audio is achievable on consumer hardware, without compromising user data privacy.
+
+
