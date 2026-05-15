@@ -35,10 +35,17 @@ from modules.context.adapter import DataAdapter
 from modules.reasoning.inference_engine import InferenceEngine
 
 from config import (
-    APP_TITLE, APP_DESCRIPTION, PAGE_LAYOUT, INITIAL_SIDEBAR_STATE,
-    OLLAMA_BASE_URL, OLLAMA_MODEL, WHISPER_MODEL, YAMNET_CONFIDENCE_THRESHOLD,
-    ENABLE_EMOTION_ANALYSIS, ENABLE_REASONING
+    APP_TITLE,
+    APP_DESCRIPTION,
+    PAGE_LAYOUT,
+    INITIAL_SIDEBAR_STATE,
+    OPENAI_MODEL,
+    WHISPER_MODEL,
+    YAMNET_CONFIDENCE_THRESHOLD,
+    ENABLE_EMOTION_ANALYSIS,
+    ENABLE_REASONING
 )
+
 
 
 # ============================================================================
