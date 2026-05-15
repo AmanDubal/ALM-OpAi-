@@ -58,7 +58,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-os.system("ollama run phi3")
 
 
 # ============================================================================
@@ -317,7 +316,6 @@ def initialize_modules():
     """Initialize all processing modules."""
     inference_engine = InferenceEngine()
     # Connect to local Ollama
-    inference_engine.setup_ollama(base_url=OLLAMA_BASE_URL, model=OLLAMA_MODEL)
     
     return {
         'preprocessor': AudioPreprocessor(),
