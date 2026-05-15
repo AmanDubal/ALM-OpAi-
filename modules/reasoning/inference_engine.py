@@ -70,7 +70,7 @@ class AudioEnvironmentProfile:
 # CORE ANALYSIS ENGINE
 # ============================================================================
 
-class InferenceEngine:
+class InferenceEngine(OpenAIReasoningMixin):
     """
     Advanced audio environment understanding system.
     Identifies noise types, background characteristics, and contextual information.
@@ -978,467 +978,177 @@ class InferenceEngine:
                 return float(decay)
         return 0.0
     
-    # ========================================================================
-    # OLLAMA INTEGRATION - TWO-LAYER REASONING SYSTEM
-    # ========================================================================
+    # ============================================================================
+    # OPENAI GPT REASONING SYSTEM
+    # ============================================================================
     
-    def setup_ollama(self, base_url: str = 'http://localhost:11434', model: str = 'deepseek-r1:1.5b') -> bool:
-        """
-        Initialize Ollama client for local LLM-based reasoning.
-        
-        Args:
-            base_url: Ollama server URL (default: http://localhost:11434)
-            model:    Ollama model name (default: deepseek-r1:1.5b)
-        
-        Returns:
-            True if Ollama is reachable, False otherwise
-        """
-        self.ollama_base_url = base_url
-        self.ollama_model = model
-        
-        try:
-            import ollama
-            # Quick connectivity check — list local models
-            client = ollama.Client(host=base_url)
-            client.list()
-            self.ollama_client = client
-            return True
-        except ImportError:
-            import warnings
-            warnings.warn("ollama package not installed. Install with: pip install ollama")
-            self.ollama_client = None
-            return False
-        except Exception as e:
-            import warnings
-            warnings.warn(f"Ollama not reachable at {base_url}: {str(e)}. Fallback logic will be used.")
-            self.ollama_client = None
-            return False
+    from openai import OpenAI
+    import os
     
-    def reason_with_ollama(self, context: Dict[str, Any], risk_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Perform LLM-based reasoning using a local Ollama model with semantic context.
-        
-        Args:
-            context: Integrated audio context
-            risk_analysis: Output from SemanticAnalyzer
-        
-        Returns:
-            Structured reasoning output with JSON response
-        """
-        if not self.ollama_client:
-            return self._fallback_reasoning(
-                context, risk_analysis,
-                reason="Ollama client not initialised — server unreachable at startup or 'ollama' package missing."
-            )
-        
-        try:
-            # Build comprehensive prompt
-            prompt = self._build_ollama_prompt(context, risk_analysis)
-            
-            # Call Ollama via the official Python client
-            response = self.ollama_client.chat(
-                model=self.ollama_model,
-                messages=[
-                    {
-                        'role': 'system',
-                        'content': (
-                            "You are an emergency audio reasoning AI.\n"
-                            "Your job is to analyze transcript and detected keywords.\n"
-                            "Follow these strict rules:\n"
-                            "1. Do NOT guess without evidence.\n"
-                            "2. If location is unclear, write: Location unclear.\n"
-                            "3. Distinguish emotional tone of different speakers.\n"
-                            "4. Use detected keywords as evidence.\n"
-                            "5. Be structured and professional.\n"
-                            "6. Do NOT invent details.\n\n"
-                            "Return output in this EXACT format:\n\n"
-                            "\U0001f4cd Location:\n"
-                            "...\n\n"
-                            "\U0001f465 Number of People Talking:\n"
-                            "...\n\n"
-                            "\U0001f3af Activity:\n"
-                            "...\n\n"
-                            "\U0001f60a Emotional Tone:\n"
-                            "...\n\n"
-                            "\u26a0 Risk Level:\n"
-                            "...\n\n"
-                            "\U0001f4ca Confidence:\n"
-                            "...\n\n"
-                            "\U0001f4dd Summary:\n"
-                            "..."
-                        )
-                    },
-                    {'role': 'user', 'content': prompt}
-                ],
-                options={'temperature': 0.2, 'num_predict': 400}
-            )
-            
-            # Parse response
-            response_text = response['message']['content']
-            reasoning_output = self._parse_ollama_response(response_text, risk_analysis)
-            
-            return reasoning_output
-            
-        except Exception as e:
-            import warnings
-            err = str(e)
-            warnings.warn(f"Ollama call failed: {err}. Using fallback logic.")
-            return self._fallback_reasoning(
-                context, risk_analysis,
-                reason=f"Ollama API call failed — {err}"
-            )
+    class OpenAIReasoningMixin:
     
-    def _build_ollama_prompt(self, context: Dict[str, Any], risk_analysis: Dict[str, Any]) -> str:
-        """
-        Build comprehensive prompt for Ollama reasoning.
-        
-        Args:
-            context: Integrated audio context
-            risk_analysis: Semantic analysis output
-        
-        Returns:
-            Formatted prompt string
-        """
-        transcript = context.get('speech', 'No speech')
-        emotion    = context.get('emotion', 'neutral')
-        sounds     = context.get('sounds', [])
-        risk_level = risk_analysis.get('risk_level', 'low')
-        situation  = risk_analysis.get('situation_type', 'normal_conversation')
-        keywords   = risk_analysis.get('keywords_detected', [])
-        signals    = risk_analysis.get('signals_detected', [])
-        
-        prompt = f"""Analyze this audio scene:
-
-TRANSCRIPT: "{transcript}"
-
-ACOUSTIC ENVIRONMENT:
-- Speaker emotion: {emotion}
-- Detected sounds: {', '.join(sounds[:3]) if sounds else 'None'}
-
-SEMANTIC ANALYSIS:
-- Risk Level: {risk_level.upper()}
-- Situation Type: {situation}
-- Key Indicators: {', '.join(keywords[:5]) if keywords else 'None'}
-- Dispatch Signals: {', '.join(signals) if signals else 'None'}
-
-Respond using EXACTLY these labeled sections (one line each):
-LOCATION: <where this is happening>
-ACTIVITY: <what is happening>
-EMOTION: <emotional tone>
-RISK: <low | moderate | high>
-CONFIDENCE: <0.0-1.0>
-EXPLANATION: <brief reasoning grounded in the evidence above>
-"""
-        return prompt
-    
-    def _parse_ollama_response(self, response_text: str, risk_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Parse structured text response from Ollama.
-        Handles two common LLM output styles:
-          - Newline-separated:  📍 Location:\ntext\n\n👥 Number...
-          - Arrow-separated:    Location: text> ACTIVITY: text> ...
-        Only falls back if the response is completely empty.
-        """
-        import re
-
-        # Only fall back if the model returned nothing at all
-        if not response_text or not response_text.strip():
-            return self._fallback_reasoning(
-                {}, risk_analysis,
-                reason="Ollama returned an empty response."
-            )
-
-        # ── Normalise arrow-separated one-liners into newlines ──────────────────
-        # Some models output: "Location: X> ACTIVITY: Y> EMOTION: Z"
-        # Replace "> WORD:" or "> emoji WORD:" patterns with "\nWORD:"
-        text = response_text.strip()
-        text = re.sub(r'\s*>\s*', '\n', text)   # turn every ">" into a newline
-
-        # Known section keywords (order matters for stop-lookahead)
-        _SECTION_KEYS = [
-            'Location', 'Number of People', 'Activity',
-            'Emotional Tone', 'Risk Level', 'Confidence', 'Summary',
-            # plain variants the model may use
-            'LOCATION', 'ACTIVITY', 'EMOTION', 'RISK', 'CONFIDENCE', 'EXPLANATION',
-        ]
-
-        def extract(label: str, default: str = '') -> str:
+        def setup_openai(self):
             """
-            Pull the value after a section header, stopping at the NEXT
-            section header (or end of text).  Handles emoji prefixes on the
-            header line (e.g. '📍 Location:').
+            Initialize OpenAI client
             """
-            # Stop-lookahead: any of the known section keywords followed by ':'
-            stop = '|'.join(re.escape(k) for k in _SECTION_KEYS)
-            pattern = (
-                rf'(?:^[^\S\r\n]*(?:[^\w\r\n]*)?{re.escape(label)}[^\:\n]*:\s*)'
-                rf'(.+?)'
-                rf'(?=\n[^\S\r\n]*(?:[^\w\r\n]*)?(?:{stop})[^\:\n]*:|\Z)'
+    
+            self.openai_client = OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY")
             )
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-            if match:
-                value = match.group(1).strip()
-                # Strip any residual ">" artefacts
-                value = re.sub(r'\s*>\s*$', '', value).strip()
-                return value
-            return default
-
-        location    = extract('Location',              'Location unclear.')
-        people      = extract('Number of People',      'Unknown')
-        activity    = extract('Activity',              'Unknown activity')
-        emotion     = extract('Emotional Tone',        risk_analysis.get('situation_type', 'neutral'))
-        risk_raw    = extract('Risk Level',            risk_analysis.get('risk_level', 'low'))
-        conf_raw    = extract('Confidence',            '0.6')
-        explanation = extract('Summary',               '')
-        if not explanation:
-            # Fallback: use EXPLANATION label used by some models
-            explanation = extract('Explanation',       '')
-
-        # Trim explanation to first 3 sentences to avoid wall-of-text
-        if explanation:
-            sentences = re.split(r'(?<=[.!?])\s+', explanation.strip())
-            explanation = ' '.join(sentences[:3])
-
-        # Normalise risk level to one of the three valid values
-        risk_level = 'low'
-        for token in ('high', 'moderate', 'low'):
-            if token in risk_raw.lower():
-                risk_level = token
-                break
-
-        # Honour high-risk override from semantic layer
-        if risk_analysis.get('risk_level') == 'high':
-            risk_level = 'high'
-
-        # Safe float parse for confidence
-        try:
-            confidence = float(re.search(r'[0-9]*\.?[0-9]+', conf_raw).group())
-            confidence = max(0.0, min(1.0, confidence))
-        except (AttributeError, ValueError):
-            confidence = 0.6
-
-        return {
-            'location':        location,
-            'people':          people,
-            'activity':        activity,
-            'emotion':         emotion,
-            'risk_level':      risk_level,
-            'confidence':      confidence,
-            'explanation':     explanation,
-            'source':          'ollama_lm',
-            'fallback_reason': None,
-            'raw_response':    text      # keep for debugging
-        }
     
-    def _fallback_reasoning(self, context: Dict[str, Any], risk_analysis: Dict[str, Any],
-                            reason: str = "Ollama unavailable — using deterministic fallback.") -> Dict[str, Any]:
-        """
-        Deterministic fallback reasoning when Ollama is unavailable.
-        Uses risk_score and situation classification.
-        
-        Args:
-            context:      Audio context
-            risk_analysis: Semantic analysis output
-            reason:       Human-readable explanation of why the fallback was triggered
-        
-        Returns:
-            Fallback reasoning output (includes 'fallback_reason' key)
-        """
-        risk_score = risk_analysis.get('risk_score', 0.0)
-        risk_level = risk_analysis.get('risk_level', 'low')
-        situation  = risk_analysis.get('situation_type', 'normal_conversation')
-        keywords   = risk_analysis.get('keywords_detected', [])
-        
-        # Extract transcript from nested speech structure
-        speech_data = context.get('speech', {})
-        if isinstance(speech_data, dict):
-            transcript = speech_data.get('transcript', 'No speech detected')
-        else:
-            transcript = str(speech_data) if speech_data else 'No speech detected'
-        
-        # Extract emotion from nested emotion_prediction structure
-        emotion_data = context.get('emotion_prediction', {})
-        if isinstance(emotion_data, dict):
-            emotion = emotion_data.get('emotional_state', 'neutral')
-        else:
-            emotion = str(emotion_data) if emotion_data else 'neutral'
-        
-        # Fallback risk logic
-        if risk_score > 0.6:
-            fallback_risk = 'high'
-        elif risk_score > 0.3:
-            fallback_risk = 'moderate'
-        else:
-            fallback_risk = 'low'
-        
-        # Situation-specific reasoning
-        situation_map = {
-            'emergency': {
-                'location': 'Location derived from context clues or emergency dispatch location',
-                'activity': 'EMERGENCY SITUATION - Immediate assistance required'
-            },
-            'medical': {
-                'location': 'Medical emergency location',
-                'activity': 'Medical emergency - Patient assistance required'
-            },
-            'conflict': {
-                'location': 'Active conflict location',
-                'activity': 'Conflict/violent situation in progress'
-            },
-            'public_event': {
-                'location': 'Public venue or gathering location',
-                'activity': 'Public event or gathering in progress'
-            },
-            'normal_conversation': {
-                'location': 'Routine conversation location',
-                'activity': 'Normal conversation or routine activity'
-            }
-        }
-        
-        situation_details = situation_map.get(situation, situation_map['normal_conversation'])
-        
-        confidence = risk_analysis.get('confidence', 0.5)
-        
-        # Create transcript snippet safely
-        transcript_snippet = transcript[:100] if isinstance(transcript, str) else str(transcript)[:100]
-        
-        return {
-            'location':        situation_details['location'],
-            'activity':        situation_details['activity'],
-            'emotion':         emotion,
-            'risk_level':      fallback_risk,
-            'confidence':      float(confidence),
-            'explanation':     (f"Situation analysis: {situation}. "
-                               f"Key indicators: {', '.join(keywords[:3]) if keywords else 'None'}. "
-                               f"Risk score: {risk_score:.2f}. "
-                               f"Transcript snippet: {transcript_snippet}..."),
-            'source':          'fallback_deterministic',
-            'fallback_reason': reason
-        }
+            self.openai_model = os.getenv(
+                "OPENAI_MODEL",
+                "gpt-4.1-mini"
+            )
     
-    def generate_inference_v2(self, context: Dict[str, Any], risk_analysis: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Generate inference using two-layer reasoning system.
-        NEW: Enhanced version with semantic context (Layer 2).
-        
-        Replaces the old generate_inference method.
-        
-        Args:
-            context: Integrated audio context from DataAdapter
-            risk_analysis: Output from SemanticAnalyzer (Layer 2)
-        
-        Returns:
-            Formatted inference report
-        """
-        if risk_analysis is None:
-            risk_analysis = self._create_default_risk_analysis()
-        
-        # Attempt Ollama reasoning, fallback to deterministic
-        reasoning_output = self.reason_with_ollama(context, risk_analysis)
-        
-        # Format output
-        return self._format_reasoning_report(reasoning_output, risk_analysis)
+        def reason_with_openai(
+            self,
+            context: Dict[str, Any],
+            risk_analysis: Dict[str, Any]
+        ) -> Dict[str, Any]:
     
-    def _create_default_risk_analysis(self) -> Dict[str, Any]:
-        """Create default risk analysis when none provided"""
-        return {
-            'risk_level': 'low',
-            'risk_score': 0.0,
-            'situation_type': 'normal_conversation',
-            'keywords_detected': [],
-            'signals_detected': [],
-            'confidence': 0.0
-        }
+            try:
     
-    def _format_reasoning_report(self, reasoning: Dict[str, Any], risk_analysis: Dict[str, Any]) -> str:
-        """
-        Format reasoning output as structured report.
-        
-        Args:
-            reasoning: Reasoning output from Ollama or fallback
-            risk_analysis: Original risk analysis
-        
-        Returns:
-            Formatted report string
-        """
-        report = []
-        
-        # Reasoning Source
-        source = reasoning.get('source', 'unknown')
-        source_label = "AI Reasoning (Ollama — phi)" if source == 'ollama_lm' else "Deterministic Fallback Logic"
-        report.append(f"📊 Analysis Source: {source_label}")
-        
-        # Show fallback reason banner if applicable
-        fallback_reason = reasoning.get('fallback_reason')
-        if source == 'fallback_deterministic' and fallback_reason:
-            report.append("")
-            report.append("⚠️  FALLBACK REASON:")
-            report.append(f"   {fallback_reason}")
-        report.append("")
-        # Location
-        report.append("📍 LOCATION:")
-        report.append(f"   {reasoning.get('location', 'Unknown')}")
-        report.append("")
-
-        # People (only from Ollama)
-        if reasoning.get('people'):
-            report.append("👥 NUMBER OF PEOPLE:")
-            report.append(f"   {reasoning.get('people')}")
-            report.append("")
-
-        # Activity
-        report.append("🎯 ACTIVITY:")
-        report.append(f"   {reasoning.get('activity', 'Unknown activity')}")
-        report.append("")
-
-        # Emotion
-        report.append("😊 EMOTIONAL TONE:")
-        report.append(f"   {reasoning.get('emotion', 'Unknown')}")
-        report.append("")
-        
-        # Risk Assessment (Layer 2)
-        report.append("⚠️  RISK ASSESSMENT (Layer 2: Semantic Context):")
-        report.append(f"   Risk Level: {reasoning.get('risk_level', 'Unknown').upper()}")
-        report.append(f"   Risk Score: {risk_analysis.get('risk_score', 0.0):.2f}")
-        report.append(f"   Situation Type: {risk_analysis.get('situation_type', 'Unknown').replace('_', ' ').title()}")
-        report.append("")
-        
-        # Key Indicators
-        keywords = risk_analysis.get('keywords_detected', [])
-        if keywords:
-            report.append("🔍 KEY INDICATORS DETECTED:")
-            for keyword in keywords[:5]:
-                report.append(f"   • {keyword}")
-            if len(keywords) > 5:
-                report.append(f"   ... and {len(keywords) - 5} more")
-            report.append("")
-        
-        # Dispatch Signals
-        signals = risk_analysis.get('signals_detected', [])
-        if signals:
-            report.append("📡 DISPATCH/GUIDANCE SIGNALS:")
-            for signal in signals[:3]:
-                report.append(f"   • {signal}")
-            report.append("")
-        
-        # Confidence
-        confidence = reasoning.get('confidence', 0.0)
-        report.append(f"✅ CONFIDENCE SCORE: {confidence:.0%}")
-        report.append("")
-        
-        # Summary — only shown when the parser extracted real content
-        explanation = reasoning.get('explanation', '').strip()
-        if explanation:
-            report.append("📋 SUMMARY:")
-            for line in explanation.split('\n'):
-                if line.strip():
-                    report.append(f"   {line}")
-            report.append("")
-        
-        report.append("=" * 80)
-        
-        return "\n".join(report)
-
+                prompt = self._build_openai_prompt(
+                    context,
+                    risk_analysis
+                )
+    
+                response = self.openai_client.chat.completions.create(
+                    model=self.openai_model,
+    
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an emergency audio reasoning AI.\n"
+                                "Analyze transcript, sound events, emotions, "
+                                "and semantic risk signals.\n"
+                                "Be factual, evidence-based, and structured.\n"
+                                "Do not hallucinate details.\n"
+                                "Return valid JSON only."
+                            )
+                        },
+    
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+    
+                    temperature=0.2,
+                    max_tokens=700
+                )
+    
+                response_text = response.choices[0].message.content
+    
+                return self._parse_openai_response(
+                    response_text,
+                    risk_analysis
+                )
+    
+            except Exception as e:
+    
+                import warnings
+    
+                warnings.warn(
+                    f"OpenAI reasoning failed: {str(e)}"
+                )
+    
+                return self._fallback_reasoning(
+                    context,
+                    risk_analysis,
+                    reason=f"OpenAI API failed: {str(e)}"
+                )
+    
+        def _build_openai_prompt(
+            self,
+            context: Dict[str, Any],
+            risk_analysis: Dict[str, Any]
+        ) -> str:
+    
+            transcript = context.get('speech', 'No speech')
+            emotion = context.get('emotion', 'neutral')
+            sounds = context.get('sounds', [])
+    
+            return f'''
+    Analyze this audio situation carefully.
+    
+    TRANSCRIPT:
+    {transcript}
+    
+    EMOTION:
+    {emotion}
+    
+    SOUND EVENTS:
+    {", ".join(sounds[:5]) if sounds else "None"}
+    
+    RISK ANALYSIS:
+    - Risk Level: {risk_analysis.get("risk_level")}
+    - Situation: {risk_analysis.get("situation_type")}
+    - Keywords: {risk_analysis.get("keywords_detected")}
+    
+    Return STRICT JSON:
+    
+    {{
+        "location": "...",
+        "people": "...",
+        "activity": "...",
+        "emotion": "...",
+        "risk_level": "low/moderate/high",
+        "confidence": 0.0,
+        "explanation": "..."
+    }}
+    '''
+    
+        def _parse_openai_response(
+            self,
+            response_text: str,
+            risk_analysis: Dict[str, Any]
+        ) -> Dict[str, Any]:
+    
+            import json
+    
+            try:
+    
+                cleaned = response_text.strip()
+    
+                if cleaned.startswith("```json"):
+                    cleaned = cleaned.replace("```json", "")
+                    cleaned = cleaned.replace("```", "")
+    
+                parsed = json.loads(cleaned)
+    
+                parsed["source"] = "openai_gpt"
+    
+                return parsed
+    
+            except Exception:
+    
+                return self._fallback_reasoning(
+                    {},
+                    risk_analysis,
+                    reason="Failed to parse OpenAI response"
+                )
+    
+        def generate_inference_v2(
+            self,
+            context: Dict[str, Any],
+            risk_analysis: Optional[Dict[str, Any]] = None
+        ) -> str:
+    
+            if risk_analysis is None:
+                risk_analysis = self._create_default_risk_analysis()
+    
+            reasoning_output = self.reason_with_openai(
+                context,
+                risk_analysis
+            )
+    
+            return self._format_reasoning_report(
+                reasoning_output,
+                risk_analysis
+            )
 # ============================================================================
 # REPORT GENERATION
 # ============================================================================
