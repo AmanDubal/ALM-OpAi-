@@ -1,12 +1,11 @@
 services:
   - type: web
-    name: ALM-OpAi-
+    name: ALM-OpenRouter
     runtime: python
-
     buildCommand: pip install -r requirements.txt
-
     startCommand: streamlit run app.py --server.port=$PORT --server.address=0.0.0.0
-
     envVars:
-      - key: OPENAI_MODEL
+      - key: OPENROUTER_MODEL
         value: openai/gpt-4-turbo
+      - key: OPENROUTER_API_KEY
+        sync: false

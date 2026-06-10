@@ -2,7 +2,7 @@
 Configuration Module
 
 Contains all configuration settings for the Audio Language Model system.
-Updated for OpenAI API integration instead of Ollama.
+Updated for OpenRouter API integration.
 """
 
 import os
@@ -12,14 +12,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ============================================================================
-# OPENAI API CONFIGURATION
+# OPENROUTER API CONFIGURATION
 # ============================================================================
 
-# OpenAI API Key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# OpenAI Model Configuration
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+# Model to use via OpenRouter
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4-turbo")
 
 # ============================================================================
 # YAMNET MODEL CONFIGURATION
@@ -31,12 +31,7 @@ YAMNET_MODEL_PATH = 'https://tfhub.dev/google/yamnet/1'
 # WHISPER MODEL CONFIGURATION
 # ============================================================================
 
-# Local Whisper model
 WHISPER_MODEL = 'base'
-
-# OR if using OpenAI Whisper API later:
-# WHISPER_MODEL = "whisper-1"
-
 WHISPER_LANGUAGE = None
 WHISPER_TEMPERATURE = 0.0
 
@@ -48,13 +43,7 @@ AUDIO_SAMPLE_RATE = 16000
 AUDIO_MONO = True
 AUDIO_NORMALIZATION = True
 
-SUPPORTED_FORMATS = [
-    'wav',
-    'mp3',
-    'm4a',
-    'flac',
-    'ogg'
-]
+SUPPORTED_FORMATS = ['wav', 'mp3', 'm4a', 'flac', 'ogg']
 
 AUDIO_CHUNK_DURATION = 10
 AUDIO_FRAME_LENGTH = 0.01
@@ -71,23 +60,17 @@ YAMNET_TOP_EVENTS = 5
 # ============================================================================
 
 EMOTION_CLASSES = [
-    'neutral',
-    'calm',
-    'happy',
-    'sad',
-    'angry',
-    'fearful',
-    'disgust',
-    'surprised'
+    'neutral', 'calm', 'happy', 'sad',
+    'angry', 'fearful', 'disgust', 'surprised'
 ]
 
 EMOTION_CONFIDENCE_THRESHOLD = 0.3
 
 # ============================================================================
-# OPENAI SYSTEM PROMPT
+# OPENROUTER SYSTEM PROMPT
 # ============================================================================
 
-OPENAI_SYSTEM_PROMPT = """
+OPENROUTER_SYSTEM_PROMPT = """
 You are an advanced AI audio scene understanding system.
 
 You analyze:
@@ -117,10 +100,11 @@ RISK DETECTION:
 - Distress language
 
 OUTPUT FORMAT:
-Return ONLY valid JSON.
+Return ONLY valid JSON with no markdown fences.
 
 {
   "location": "...",
+  "people": "...",
   "activity": "...",
   "emotion": "...",
   "risk_level": "low|moderate|high",
@@ -145,7 +129,6 @@ INITIAL_SIDEBAR_STATE = "expanded"
 # ============================================================================
 
 DEBUG_MODE = os.getenv('DEBUG_MODE', 'False').lower() == 'true'
-
 LOG_LEVEL = 'INFO'
 
 # ============================================================================
@@ -162,5 +145,4 @@ ENABLE_SEMANTIC_ANALYSIS = True
 # ============================================================================
 
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
-
 UPLOAD_TEMP_DIR = './temp_uploads'

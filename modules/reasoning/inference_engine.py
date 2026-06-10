@@ -1,40 +1,28 @@
 """
 Module 6: Audio Environment Analysis & Reasoning
 
-Purpose:
-    Analyze and understand audio environment characteristics, identify noise sources,
-    and provide contextual assessment of acoustic conditions.
-
-Working:
-    - Performs spectral and temporal analysis of audio
-    - Classifies noise types using frequency signatures
-    - Analyzes background noise floor and SNR
-    - Infers spatial and environmental characteristics
-    - Generates comprehensive audio analysis reports
-
-Output:
-    - AudioEnvironmentProfile with detailed acoustic analysis
-    - Natural language report of findings
+Reasoning is performed via OpenRouter AI API (OpenAI-compatible interface).
+Falls back to a deterministic rule-based report when the API is unavailable.
 """
 
+import os
+import json
+import warnings
+import re
 import librosa
 import numpy as np
 import scipy.signal as signal
-from scipy.fft import fft
-import json
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Any, Optional
 from enum import Enum
-from collections import defaultdict
-import warnings
+from openai import OpenAI
+
 warnings.filterwarnings('ignore')
 
-# ============================================================================
-# NOISE CLASSIFICATION SYSTEM
-# ============================================================================
+
+# ── Noise taxonomy ────────────────────────────────────────────────────────────
 
 class NoiseCategory(Enum):
-    """Hierarchical noise categorization"""
     AMBIENT = "ambient_background"
     MACHINERY = "industrial_mechanical"
     TRAFFIC = "transportation"
@@ -43,9 +31,9 @@ class NoiseCategory(Enum):
     STRUCTURAL = "building_related"
     UNIDENTIFIED = "unknown_source"
 
+
 @dataclass
 class NoiseSignature:
-    """Detailed noise characteristics"""
     category: NoiseCategory
     frequency_range: Tuple[float, float]
     temporal_pattern: str
@@ -54,9 +42,9 @@ class NoiseSignature:
     harmonic_content: List[float]
     spectral_shape: str
 
+
 @dataclass
 class AudioEnvironmentProfile:
-    """Complete environmental analysis"""
     dominant_noises: List[NoiseSignature]
     background_noise_floor: float
     signal_to_noise_ratio: float
@@ -66,144 +54,53 @@ class AudioEnvironmentProfile:
     risk_factors: List[str]
     quality_assessment: Dict[str, float]
 
-# ============================================================================
-# CORE ANALYSIS ENGINE
-# ============================================================================
 
-class InferenceEngine(OpenAIReasoningMixin):
+# ── Main engine ───────────────────────────────────────────────────────────────
+
+class InferenceEngine:
     """
-    Advanced audio environment understanding system.
-    Identifies noise types, background characteristics, and contextual information.
+    Two-layer audio reasoning system.
+    Layer 1 — acoustic analysis (spectral / temporal features).
+    Layer 2 — LLM reasoning via OpenRouter AI API.
     """
-    
-    def __init__(self, sr: int = 16000, n_fft: int = 2048, hop_length: int = 512, 
-                 api_key: str = None):
-        """
-        Initialize audio environment analyzer.
-        
-        Args:
-            sr: Sample rate (Hz)
-            n_fft: FFT window size
-            hop_length: Hop length for STFT
-            api_key: Optional API key for extended reasoning (future use)
-        """
+
+    def __init__(self, sr: int = 16000, n_fft: int = 2048, hop_length: int = 512):
         self.sr = sr
         self.n_fft = n_fft
         self.hop_length = hop_length
-        self.api_key = api_key
         self.fft_freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
-        
-        # Ollama attributes (initialized in setup_ollama)
-        self.ollama_model = None
-        self.ollama_base_url = None
-        self.ollama_client = None
-        
-        # Noise signatures database
         self.noise_signatures = self._initialize_noise_database()
-        
-    def _initialize_noise_database(self) -> Dict[str, Dict[str, Any]]:
-        """Initialize comprehensive noise signature database"""
-        return {
-            # Traffic & Transportation
-            'car_engine': {
-                'freq_range': (100, 500),
-                'harmonics': [150, 300, 450],
-                'temporal': 'continuous_variable',
-                'pattern_type': 'engine_rumble'
-            },
-            'horn_beep': {
-                'freq_range': (800, 1200),
-                'harmonics': [1000],
-                'temporal': 'impulsive_short',
-                'pattern_type': 'sharp_transient'
-            },
-            'tire_screech': {
-                'freq_range': (1500, 3000),
-                'harmonics': [2000, 2500],
-                'temporal': 'burst_sustained',
-                'pattern_type': 'friction_noise'
-            },
-            
-            # Industrial/Machinery
-            'machinery_rumble': {
-                'freq_range': (50, 300),
-                'harmonics': [100, 200, 300],
-                'temporal': 'continuous_rhythmic',
-                'pattern_type': 'mechanical_vibration'
-            },
-            'metal_grinding': {
-                'freq_range': (2000, 5000),
-                'harmonics': [3000, 4000],
-                'temporal': 'sustained_harsh',
-                'pattern_type': 'friction_grinding'
-            },
-            
-            # Environmental
-            'wind_noise': {
-                'freq_range': (100, 1000),
-                'harmonics': [],
-                'temporal': 'continuous_turbulent',
-                'pattern_type': 'broadband_noise'
-            },
-            'rain': {
-                'freq_range': (2000, 8000),
-                'harmonics': [],
-                'temporal': 'continuous_random',
-                'pattern_type': 'rainfall_patter'
-            },
-            'thunder': {
-                'freq_range': (20, 200),
-                'harmonics': [50, 100],
-                'temporal': 'impulsive_booming',
-                'pattern_type': 'low_frequency_burst'
-            },
-            
-            # Urban/Structural
-            'construction': {
-                'freq_range': (500, 2000),
-                'harmonics': [1000],
-                'temporal': 'irregular_impulsive',
-                'pattern_type': 'impact_noise'
-            },
-            'door_slam': {
-                'freq_range': (200, 800),
-                'harmonics': [400, 600],
-                'temporal': 'sharp_transient',
-                'pattern_type': 'impact_resonance'
-            },
-            'background_hum': {
-                'freq_range': (50, 60),
-                'harmonics': [50, 100, 150],
-                'temporal': 'continuous_steady',
-                'pattern_type': 'electrical_hum'
-            }
-        }
-    
+
+        self._client: Optional[OpenAI] = None
+        self._model: str = os.getenv("OPENROUTER_MODEL", "openai/gpt-4-turbo")
+        self._base_url: str = "https://openrouter.ai/api/v1"
+
+    # ── Setup ─────────────────────────────────────────────────────────────────
+
+    def setup_openrouter(
+        self,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> None:
+        """Initialise the OpenRouter client."""
+        key = api_key or os.getenv("OPENROUTER_API_KEY", "")
+        if not key:
+            warnings.warn("OPENROUTER_API_KEY not set — fallback mode will be used.")
+        if base_url:
+            self._base_url = base_url
+        if model:
+            self._model = model
+        self._client = OpenAI(api_key=key, base_url=self._base_url)
+
+    # ── Public interfaces ─────────────────────────────────────────────────────
+
     def analyze(self, audio: np.ndarray, sr: int = None) -> Dict[str, Any]:
-        """
-        Public interface method for audio environment analysis.
-        
-        Args:
-            audio: Audio signal (numpy array)
-            sr: Sample rate (defaults to initialized sr)
-        
-        Returns:
-            Dictionary containing analysis results:
-                - profile: AudioEnvironmentProfile object
-                - report: Natural language analysis report
-                - json_export: Exportable JSON data
-        """
+        """Acoustic environment analysis (Layer 1). Returns profile + report + json_export."""
         if sr is None:
             sr = self.sr
-        
-        # Perform analysis
         profile = self.analyze_audio_signal(audio, sr)
-        
-        # Generate report
-        reporter = AudioAnalysisReporter()
-        report = reporter.generate_report(profile)
-        
-        # Create JSON export
+        report = AudioAnalysisReporter.generate_report(profile)
         json_export = {
             'environmental_context': profile.environmental_context,
             'dominant_noises': [
@@ -212,1018 +109,602 @@ class InferenceEngine(OpenAIReasoningMixin):
                     'frequency_range': n.frequency_range,
                     'temporal_pattern': n.temporal_pattern,
                     'intensity': n.intensity_level,
-                    'confidence': n.confidence
+                    'confidence': n.confidence,
                 }
                 for n in profile.dominant_noises
             ],
             'acoustic_measurements': {
                 'background_noise_floor_db': profile.background_noise_floor,
                 'signal_to_noise_ratio_db': profile.signal_to_noise_ratio,
-                'acoustic_complexity': profile.acoustic_complexity
+                'acoustic_complexity': profile.acoustic_complexity,
             },
             'spatial_characteristics': profile.spatial_characteristics,
             'quality_assessment': profile.quality_assessment,
-            'risk_factors': profile.risk_factors
+            'risk_factors': profile.risk_factors,
         }
-        
-        return {
-            'profile': profile,
-            'report': report,
-            'json_export': json_export
-        }
-    
-    def get_model_info(self) -> Dict[str, Any]:
+        return {'profile': profile, 'report': report, 'json_export': json_export}
+
+    def generate_inference_v2(
+        self,
+        context: Dict[str, Any],
+        risk_analysis: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """
-        Get information about inference engine.
-        
-        Returns:
-            Dictionary with model information
+        Primary reasoning entry-point.
+        Calls OpenRouter LLM; falls back to deterministic output on failure.
         """
-        return {
-            'model_type': 'Audio Environment Analysis Engine',
-            'method': 'Multi-domain spectral and temporal analysis',
-            'sample_rate': self.sr,
-            'fft_window_size': self.n_fft,
-            'hop_length': self.hop_length,
-            'noise_categories': [cat.value for cat in NoiseCategory],
-            'analysis_modules': [
-                'Spectral Feature Extraction',
-                'Temporal Pattern Analysis',
-                'Noise Classification',
-                'Background Noise Analysis',
-                'Spatial Characteristics Inference',
-                'Audio Quality Assessment'
-            ],
-            'reasoning_pipeline': '4-Stage (Planning → Captioning → Reasoning → Summarization)'
-        }
-    
-    def perform_reasoning(self, speech_data: Dict, sound_data: List[Dict], 
-                         emotion_data: Dict) -> Dict[str, Any]:
-        """
-        Perform 4-stage audio reasoning pipeline: Planning, Captioning, Reasoning, Summarizing.
-        Synthesizes verbal content with acoustic environment for comprehensive context understanding.
-        
-        Args:
-            speech_data: Speech transcription and language info
-            sound_data: Detected sound events with confidence
-            emotion_data: Paralinguistic and emotional analysis
-        
-        Returns:
-            Dictionary containing:
-                - plan: Planning stage output (what to analyze)
-                - caption: Acoustic description
-                - reasoning_steps: Chain-of-thought logic
-                - final_summary: Comprehensive context summary
-        """
-        # Stage 1: Planning - Determine analysis needs
-        plan = self._stage_planning(speech_data, sound_data, emotion_data)
-        
-        # Stage 2: Captioning - Describe acoustic environment
-        caption = self._stage_captioning(speech_data, sound_data, emotion_data)
-        
-        # Stage 3: Logical Reasoning - Chain-of-thought analysis
-        reasoning_steps = self._stage_reasoning(speech_data, sound_data, emotion_data)
-        
-        # Stage 4: Summarization - Final context synthesis
-        final_summary = self._stage_summarization(speech_data, sound_data, emotion_data, reasoning_steps)
-        
-        return {
-            'plan': plan,
-            'caption': caption,
-            'reasoning_steps': reasoning_steps,
-            'final_summary': final_summary
-        }
-    
+        if risk_analysis is None:
+            risk_analysis = self._default_risk()
+        if self._client is None:
+            self.setup_openrouter()
+        result = self._reason_with_openrouter(context, risk_analysis)
+        return self._format_report(result, risk_analysis)
+
+    # legacy wrapper kept for compatibility
     def generate_inference(self, context: Dict) -> str:
-        """
-        Generate inference text from integrated audio context.
-        Wrapper method that extracts components and performs reasoning.
-        
-        Args:
-            context: Integrated context dictionary containing:
-                - speech: Transcribed text
-                - sounds: List of detected sound events
-                - emotion: Emotional state
-                - Additional optional context fields
-        
-        Returns:
-            Formatted natural language inference text
-        """
-        # Extract components from integrated context
-        speech_data = {
-            'text': context.get('speech', 'No speech detected'),
-            'language_detected': context.get('language_detected', 'unknown')
-        }
-        
-        # Convert sound events to proper format
+        speech_data = {'text': context.get('speech', ''), 'language_detected': context.get('language_detected', 'unknown')}
         sounds_raw = context.get('sounds', [])
-        sound_data = []
-        if isinstance(sounds_raw, list):
-            for sound in sounds_raw:
-                if isinstance(sound, str):
-                    sound_data.append({'event': sound, 'confidence': 0.7})
-                elif isinstance(sound, dict):
-                    sound_data.append(sound)
-        
-        # Extract emotional data
-        emotion_data = {
-            'emotional_state': context.get('emotion', 'Neutral'),
-            'vocal_tension': context.get('vocal_tension', 'Unknown')
+        sound_data = [{'event': s, 'confidence': 0.7} if isinstance(s, str) else s for s in sounds_raw]
+        emotion_data = {'emotional_state': context.get('emotion', 'Neutral'), 'vocal_tension': context.get('vocal_tension', 'Unknown')}
+        result = self.perform_reasoning(speech_data, sound_data, emotion_data)
+        return self._format_inference_output(result)
+
+    # ── OpenRouter call ───────────────────────────────────────────────────────
+
+    def _reason_with_openrouter(self, context: Dict, risk_analysis: Dict) -> Dict:
+        try:
+            prompt = self._build_prompt(context, risk_analysis)
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an emergency audio reasoning AI.\n"
+                            "Analyze transcript, sound events, emotions, and risk signals.\n"
+                            "Be factual and evidence-based. Do not hallucinate.\n"
+                            "Return valid JSON only — no markdown fences, no extra text."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                max_tokens=700,
+            )
+            raw = response.choices[0].message.content or ""
+            return self._parse_llm_json(raw, risk_analysis)
+        except Exception as exc:
+            warnings.warn(f"OpenRouter call failed: {exc}")
+            return self._fallback(context, risk_analysis, reason=str(exc))
+
+    def _build_prompt(self, context: Dict, risk_analysis: Dict) -> str:
+        # Extract speech
+        sp = context.get("speech", {})
+        transcript = sp.get("transcript", "No speech detected") if isinstance(sp, dict) else str(sp)
+        language = sp.get("language", "unknown") if isinstance(sp, dict) else "unknown"
+
+        # Extract emotion
+        em = context.get("emotion_prediction", {})
+        emotion = em.get("emotional_state", "neutral") if isinstance(em, dict) else str(em)
+
+        # Extract sounds
+        se = context.get("sound_events", {})
+        events = se.get("events", []) if isinstance(se, dict) else []
+        labels = [e.get("event", str(e)) if isinstance(e, dict) else str(e) for e in events[:5]]
+
+        # Acoustic environment
+        env = context.get("environment_prediction", {})
+        env_ctx = env.get("context", "Unknown") if isinstance(env, dict) else "Unknown"
+
+        return f"""Analyze this audio situation carefully.
+
+TRANSCRIPT ({language}):
+{transcript}
+
+EMOTION:
+{emotion}
+
+DETECTED SOUNDS:
+{", ".join(labels) if labels else "None"}
+
+ACOUSTIC ENVIRONMENT:
+{env_ctx}
+
+RISK ANALYSIS:
+- Level    : {risk_analysis.get("risk_level", "low")}
+- Score    : {risk_analysis.get("risk_score", 0.0):.2f}
+- Situation: {risk_analysis.get("situation_type", "normal_conversation")}
+- Keywords : {", ".join(risk_analysis.get("keywords_detected", [])) or "None"}
+- Signals  : {", ".join(risk_analysis.get("signals_detected", [])) or "None"}
+
+Return STRICT JSON (no markdown):
+{{
+    "location": "...",
+    "people": "...",
+    "activity": "...",
+    "emotion": "...",
+    "risk_level": "low|moderate|high",
+    "confidence": 0.0,
+    "explanation": "1-3 sentence evidence-based summary."
+}}
+"""
+
+    def _parse_llm_json(self, raw: str, risk_analysis: Dict) -> Dict:
+        try:
+            cleaned = re.sub(r"^```(?:json)?", "", raw.strip(), flags=re.MULTILINE)
+            cleaned = re.sub(r"```$", "", cleaned, flags=re.MULTILINE).strip()
+            parsed = json.loads(cleaned)
+            parsed["source"] = "openrouter_llm"
+            return parsed
+        except Exception:
+            return self._fallback({}, risk_analysis, reason="Failed to parse LLM JSON")
+
+    def _fallback(self, context: Dict, risk_analysis: Dict, reason: str = "") -> Dict:
+        risk_level = risk_analysis.get("risk_level", "low")
+        situation = risk_analysis.get("situation_type", "normal_conversation")
+        keywords = risk_analysis.get("keywords_detected", [])
+        activity_map = {
+            "emergency": "Emergency situation detected",
+            "medical": "Medical emergency indicated",
+            "conflict": "Conflict or altercation detected",
+            "public_event": "Public gathering or event",
+            "normal_conversation": "Routine conversation",
         }
-        
-        # Perform reasoning
-        reasoning_result = self.perform_reasoning(speech_data, sound_data, emotion_data)
-        
-        # Format as readable text
-        inference_text = self._format_inference_output(reasoning_result)
-        
-        return inference_text
-    
-    def _format_inference_output(self, reasoning_result: Dict) -> str:
-        """
-        Format reasoning result into readable inference text.
-        
-        Args:
-            reasoning_result: Output from perform_reasoning()
-        
-        Returns:
-            Formatted text string
-        """
-        output = []
-        output.append("=" * 70)
-        output.append("AUDIO REASONING & INFERENCE ANALYSIS")
-        output.append("=" * 70)
-        output.append("")
-        
-        # Planning stage
-        output.append("📋 ANALYSIS PLAN:")
-        output.append(f"   {reasoning_result.get('plan', 'N/A')}")
-        output.append("")
-        
-        # Caption stage
-        output.append("🎯 ACOUSTIC SCENE CAPTION:")
-        output.append(f"   {reasoning_result.get('caption', 'N/A')}")
-        output.append("")
-        
-        # Reasoning steps
-        output.append("🧠 LOGICAL REASONING CHAIN:")
-        steps = reasoning_result.get('reasoning_steps', [])
-        for i, step in enumerate(steps, 1):
-            output.append(f"   [{i}] {step}")
-        output.append("")
-        
-        # Final summary
-        output.append("✅ FINAL INFERENCE SUMMARY:")
-        output.append(f"   {reasoning_result.get('final_summary', 'N/A')}")
-        output.append("")
-        
-        output.append("=" * 70)
-        
-        return "\n".join(output)
-    
-    
-    def _stage_planning(self, speech_data: Dict, sound_data: List[Dict], 
-                       emotion_data: Dict) -> str:
-        """Stage 1: Planning - Identify analysis objectives"""
-        return "Synthesize verbal content with acoustic environment to determine location, context, and urgency."
-    
-    def _stage_captioning(self, speech_data: Dict, sound_data: List[Dict], 
-                         emotion_data: Dict) -> str:
-        """Stage 2: Captioning - Natural language description of acoustic scene"""
-        speech_text = speech_data.get('text', 'No speech')
-        language = speech_data.get('language_detected', 'unknown')
-        
-        # Get primary sound event
+        return {
+            "location": "Location unclear — insufficient evidence.",
+            "people": "Unknown",
+            "activity": activity_map.get(situation, "Unknown activity"),
+            "emotion": "Unknown",
+            "risk_level": risk_level,
+            "confidence": max(0.1, risk_analysis.get("risk_score", 0.1)),
+            "explanation": (
+                f"Deterministic fallback ({reason}). "
+                f"Risk '{risk_level}' from keyword analysis. "
+                f"Indicators: {', '.join(keywords[:3]) or 'none'}."
+            ),
+            "source": "fallback_deterministic",
+            "fallback_reason": reason,
+        }
+
+    def _default_risk(self) -> Dict:
+        return {
+            "risk_level": "low", "risk_score": 0.0,
+            "situation_type": "normal_conversation",
+            "keywords_detected": [], "signals_detected": [],
+            "confidence": 0.0, "reasoning": "",
+        }
+
+    # ── Report formatter ──────────────────────────────────────────────────────
+
+    def _format_report(self, r: Dict, risk_analysis: Dict) -> str:
+        source = r.get("source", "unknown")
+        source_label = "AI Reasoning (OpenRouter)" if source == "openrouter_llm" else "Deterministic Fallback"
+        try:
+            conf_pct = f"{float(r.get('confidence', 0)) * 100:.0f}%"
+        except (TypeError, ValueError):
+            conf_pct = "N/A"
+
+        lines = [
+            "=" * 72,
+            "AUDIO LANGUAGE MODEL — REASONING REPORT",
+            "=" * 72,
+            f"📊 Analysis Source: {source_label}",
+            "",
+            "📍 LOCATION:",
+            f"   {r.get('location', 'Unknown')}",
+            "",
+            "👥 NUMBER OF PEOPLE:",
+            f"   {r.get('people', 'Unknown')}",
+            "",
+            "🎯 ACTIVITY:",
+            f"   {r.get('activity', 'Unknown')}",
+            "",
+            "😊 EMOTIONAL TONE:",
+            f"   {r.get('emotion', 'Unknown')}",
+            "",
+            "⚠️  RISK ASSESSMENT (Layer 2 — Semantic Context):",
+            f"   Risk Level : {risk_analysis.get('risk_level', 'low').upper()}",
+            f"   Risk Score : {risk_analysis.get('risk_score', 0.0):.2f}",
+            f"   Situation  : {risk_analysis.get('situation_type', 'normal_conversation')}",
+        ]
+
+        kws = risk_analysis.get("keywords_detected", [])
+        if kws:
+            lines += ["", "🔍 KEY INDICATORS:"] + [f"   • {k}" for k in kws[:6]]
+
+        sigs = risk_analysis.get("signals_detected", [])
+        if sigs:
+            lines += ["", "📡 DISPATCH SIGNALS:"] + [f"   • {s}" for s in sigs[:4]]
+
+        lines += [
+            "",
+            f"✅ CONFIDENCE SCORE: {conf_pct}",
+            "",
+            "📋 SUMMARY:",
+            f"   {r.get('explanation', 'No summary available.')}",
+            "",
+            "=" * 72,
+        ]
+
+        if r.get("fallback_reason"):
+            lines.append(f"ℹ️  Fallback reason: {r['fallback_reason']}")
+
+        return "\n".join(lines)
+
+    # ── Legacy 4-stage pipeline ───────────────────────────────────────────────
+
+    def perform_reasoning(self, speech_data, sound_data, emotion_data) -> Dict:
+        return {
+            'plan': "Synthesize verbal content with acoustic environment for context understanding.",
+            'caption': self._stage_captioning(speech_data, sound_data, emotion_data),
+            'reasoning_steps': self._stage_reasoning(speech_data, sound_data, emotion_data),
+            'final_summary': self._stage_summarization(speech_data, sound_data, emotion_data, []),
+        }
+
+    def _stage_captioning(self, speech_data, sound_data, emotion_data) -> str:
+        text = speech_data.get('text', 'No speech')
+        lang = speech_data.get('language_detected', 'unknown')
         sound_desc = "quiet environment"
         if sound_data:
-            primary_sound = sound_data[0].get('event', sound_data[0].get('original_event', 'Unknown')) if isinstance(sound_data[0], dict) else sound_data[0]
-            sound_desc = f"{primary_sound} environment"
-        
-        # Get emotional tone
-        emotion_state = emotion_data.get('emotional_state', 'neutral')
-        
-        caption = f"Speaker (detected language: {language}) in {sound_desc} with {emotion_state} tone. "
-        caption += f"Speech: '{speech_text[:100]}...'" if len(speech_text) > 100 else f"Speech: '{speech_text}'"
-        
-        return caption
-    
-    def _stage_reasoning(self, speech_data: Dict, sound_data: List[Dict], 
-                        emotion_data: Dict) -> List[str]:
-        """Stage 3: Reasoning - Chain-of-thought logical steps"""
-        steps = []
-        
-        # Reasoning step 1: Speech content
-        speech_text = speech_data.get('text', 'No speech detected')
-        steps.append(f"Speaker content: '{speech_text}'")
-        
-        # Reasoning step 2: Environmental context
+            first = sound_data[0]
+            sound_desc = f"{first.get('event', 'unknown') if isinstance(first, dict) else first} environment"
+        emotion = emotion_data.get('emotional_state', 'neutral')
+        snippet = f"'{text[:100]}...'" if len(text) > 100 else f"'{text}'"
+        return f"Speaker ({lang}) in {sound_desc} with {emotion} tone. Speech: {snippet}"
+
+    def _stage_reasoning(self, speech_data, sound_data, emotion_data) -> List[str]:
+        steps = [f"Speaker content: '{speech_data.get('text', '')}'"]
         if sound_data:
-            events = [s.get('event') if isinstance(s, dict) else s for s in sound_data[:3]]
-            events_str = ', '.join(events) if events else 'Quiet'
-            steps.append(f"Background environment characterized by: {events_str}")
+            evs = [s.get('event', str(s)) if isinstance(s, dict) else s for s in sound_data[:3]]
+            steps.append(f"Background: {', '.join(evs)}")
         else:
-            steps.append("Background environment: Quiet/Clean audio")
-        
-        # Reasoning step 3: Emotional/Paralinguistic cues
-        vocal_tension = emotion_data.get('vocal_tension', 'Unknown')
-        emotional_state = emotion_data.get('emotional_state', 'Neutral')
-        steps.append(f"Vocal characteristics: {emotional_state} (tension: {vocal_tension})")
-        
-        # Reasoning step 4: Context inference
-        if emotional_state == "Urgent/Stressed" and sound_data:
-            steps.append("Context inference: High urgency communication in complex acoustic environment")
-        elif emotional_state in ["Calm/Neutral", "Normal"]:
-            steps.append("Context inference: Routine communication in controlled environment")
+            steps.append("Background: Quiet/Clean audio")
+        state = emotion_data.get('emotional_state', 'Neutral')
+        tension = emotion_data.get('vocal_tension', 'Unknown')
+        steps.append(f"Vocal: {state} (tension: {tension})")
+        if state == "Urgent/Stressed":
+            steps.append("Context: High urgency communication in complex acoustic environment")
+        elif state in ["Calm/Neutral", "Normal"]:
+            steps.append("Context: Routine communication in controlled environment")
         else:
-            steps.append(f"Context inference: {emotional_state} communication with background activity")
-        
+            steps.append(f"Context: {state} communication with background activity")
         return steps
-    
-    def _stage_summarization(self, speech_data: Dict, sound_data: List[Dict], 
-                            emotion_data: Dict, reasoning_steps: List[str]) -> str:
-        """Stage 4: Summarization - Comprehensive final output"""
-        speech_text = speech_data.get('text', 'No speech')
-        language = speech_data.get('language_detected', 'unknown')
-        emotional_state = emotion_data.get('emotional_state', 'Neutral')
-        
-        # Determine environment type
-        environment_id = "Quiet Room"
+
+    def _stage_summarization(self, speech_data, sound_data, emotion_data, steps) -> str:
+        text = speech_data.get('text', 'No speech')
+        lang = speech_data.get('language_detected', 'unknown')
+        state = emotion_data.get('emotional_state', 'Neutral')
+        env = "Quiet Room"
         if sound_data:
-            environment_id = sound_data[0].get('event') if isinstance(sound_data[0], dict) else sound_data[0]
-        
-        # Build comprehensive summary
-        summary = f"Context: {emotional_state} interaction in {environment_id}. "
-        summary += f"Language: {language}. "
-        summary += f"Summary: {speech_text}"
-        
-        return summary
-    
-    def analyze_audio_file(self, audio_path: str) -> AudioEnvironmentProfile:
-        """
-        Complete analysis pipeline for audio files
-        """
-        y, sr = librosa.load(audio_path, sr=self.sr)
-        return self.analyze_audio_signal(y, sr)
-    
+            first = sound_data[0]
+            env = first.get('event', env) if isinstance(first, dict) else str(first)
+        return f"Context: {state} interaction in {env}. Language: {lang}. Summary: {text}"
+
+    def _format_inference_output(self, r: Dict) -> str:
+        lines = ["=" * 70, "AUDIO REASONING & INFERENCE ANALYSIS", "=" * 70, ""]
+        lines += ["📋 ANALYSIS PLAN:", f"   {r.get('plan', 'N/A')}", ""]
+        lines += ["🎯 ACOUSTIC SCENE CAPTION:", f"   {r.get('caption', 'N/A')}", ""]
+        lines += ["🧠 LOGICAL REASONING CHAIN:"]
+        for i, step in enumerate(r.get('reasoning_steps', []), 1):
+            lines.append(f"   [{i}] {step}")
+        lines += ["", "✅ FINAL INFERENCE SUMMARY:", f"   {r.get('final_summary', 'N/A')}", "", "=" * 70]
+        return "\n".join(lines)
+
+    # ── Acoustic analysis (Layer 1) ───────────────────────────────────────────
+
     def analyze_audio_signal(self, y: np.ndarray, sr: int = None) -> AudioEnvironmentProfile:
-        """
-        Analyze raw audio signal for environment understanding
-        
-        Args:
-            y: Audio time series
-            sr: Sample rate
-            
-        Returns:
-            AudioEnvironmentProfile with comprehensive analysis
-        """
         if sr is None:
             sr = self.sr
-        
-        # Extract multi-domain features
-        spectral_features = self._extract_spectral_features(y, sr)
-        temporal_features = self._extract_temporal_features(y, sr)
-        noise_analysis = self._perform_noise_analysis(y, sr, spectral_features)
-        background_profile = self._analyze_background_noise(y, sr)
-        spatial_info = self._infer_spatial_characteristics(y, sr)
-        
-        # Generate context-aware assessment
-        context = self._determine_environmental_context(
-            noise_analysis, spectral_features, temporal_features, spatial_info
+        sf = self._extract_spectral_features(y, sr)
+        tf = self._extract_temporal_features(y, sr)
+        na = self._perform_noise_analysis(y, sr, sf)
+        bp = self._analyze_background_noise(y, sr)
+        si = self._infer_spatial_characteristics(y, sr)
+        ctx = self._determine_environmental_context(na, sf, tf, si)
+        return AudioEnvironmentProfile(
+            dominant_noises=na['dominant_noises'],
+            background_noise_floor=bp['noise_floor'],
+            signal_to_noise_ratio=bp['snr'],
+            acoustic_complexity=self._calculate_acoustic_complexity(sf),
+            spatial_characteristics=si,
+            environmental_context=ctx,
+            risk_factors=self._identify_risk_factors(na, bp),
+            quality_assessment=self._assess_audio_quality(y, sr, sf),
         )
-        
-        # Compile findings
-        profile = AudioEnvironmentProfile(
-            dominant_noises=noise_analysis['dominant_noises'],
-            background_noise_floor=background_profile['noise_floor'],
-            signal_to_noise_ratio=background_profile['snr'],
-            acoustic_complexity=self._calculate_acoustic_complexity(spectral_features),
-            spatial_characteristics=spatial_info,
-            environmental_context=context,
-            risk_factors=self._identify_risk_factors(noise_analysis, background_profile),
-            quality_assessment=self._assess_audio_quality(y, sr, spectral_features)
-        )
-        
-        return profile
-    
-    def _extract_spectral_features(self, y: np.ndarray, sr: int) -> Dict[str, Any]:
-        """Extract comprehensive spectral characteristics"""
-        # Compute STFT
+
+    def _initialize_noise_database(self):
+        return {
+            'car_engine': {'freq_range': (100, 500), 'harmonics': [150, 300, 450]},
+            'wind_noise': {'freq_range': (100, 1000), 'harmonics': []},
+            'background_hum': {'freq_range': (50, 60), 'harmonics': [50, 100, 150]},
+        }
+
+    def _extract_spectral_features(self, y, sr):
         D = librosa.stft(y, n_fft=self.n_fft, hop_length=self.hop_length)
         magnitude = np.abs(D)
-        
-        # Power spectrogram
-        S = librosa.power_to_db(magnitude**2, ref=np.max)
-        
-        # Spectral centroid (brightness)
-        centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
-        
-        # Spectral rolloff (frequency cutoff)
-        rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr)[0]
-        
-        # Zero crossing rate (high-frequency content indicator)
-        zcr = librosa.feature.zero_crossing_rate(y)[0]
-        
-        # MFCC (perceptual representation)
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-        
-        # Spectral contrast
-        contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
-        
-        # Mel spectrogram
         mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128)
         mel_db = librosa.power_to_db(mel_spec, ref=np.max)
-        
         return {
             'magnitude': magnitude,
-            'power_db': S,
-            'centroid': centroid,
-            'rolloff': rolloff,
-            'zcr': zcr,
-            'mfcc': mfcc,
-            'contrast': contrast,
+            'power_db': librosa.power_to_db(magnitude ** 2, ref=np.max),
+            'centroid': librosa.feature.spectral_centroid(y=y, sr=sr)[0],
+            'rolloff': librosa.feature.spectral_rolloff(y=y, sr=sr)[0],
+            'zcr': librosa.feature.zero_crossing_rate(y)[0],
+            'mfcc': librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13),
+            'contrast': librosa.feature.spectral_contrast(y=y, sr=sr),
             'mel_db': mel_db,
-            'freqs': self.fft_freqs
+            'freqs': self.fft_freqs,
         }
-    
-    def _extract_temporal_features(self, y: np.ndarray, sr: int) -> Dict[str, Any]:
-        """Analyze temporal dynamics and patterns"""
-        # Onset detection
+
+    def _extract_temporal_features(self, y, sr):
         onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-        onsets = librosa.onset.onset_detect(onset_strength=onset_env, sr=sr)
-        onset_times = librosa.frames_to_time(onsets, sr=sr)
-        
-        # Tempogram
-        tempogram = librosa.feature.tempogram(onset_strength=onset_env, sr=sr)
-        
-        # RMS energy
         rms = librosa.feature.rms(y=y)[0]
-        rms_db = librosa.power_to_db(rms**2)
-        
-        # Energy flux (change over time)
-        energy_flux = np.diff(rms)
-        
-        # Zero crossing rate temporal evolution
-        zcr = librosa.feature.zero_crossing_rate(y)[0]
-        
         return {
-            'onset_times': onset_times,
             'onset_strength': onset_env,
-            'tempogram': tempogram,
             'rms': rms,
-            'rms_db': rms_db,
-            'energy_flux': energy_flux,
-            'zcr_temporal': zcr,
+            'rms_db': librosa.power_to_db(rms ** 2),
+            'energy_flux': np.diff(rms),
             'attack_time': self._estimate_attack_time(rms),
-            'decay_time': self._estimate_decay_time(rms)
+            'decay_time': self._estimate_decay_time(rms),
         }
-    
-    def _perform_noise_analysis(self, y: np.ndarray, sr: int, 
-                               spectral_features: Dict) -> Dict[str, Any]:
-        """Identify and classify noise sources"""
+
+    def _perform_noise_analysis(self, y, sr, spectral_features):
         magnitude = spectral_features['magnitude']
         freqs = spectral_features['freqs']
-        
-        # Identify peaks in frequency spectrum
-        avg_magnitude = np.mean(magnitude, axis=1)
-        peaks, properties = signal.find_peaks(avg_magnitude, 
-                                            height=np.percentile(avg_magnitude, 70),
-                                            distance=5)
-        
-        dominant_frequencies = freqs[peaks]
-        dominant_magnitudes = avg_magnitude[peaks]
-        
-        # Classify detected noises
-        detected_noises = []
-        for freq, mag in sorted(zip(dominant_frequencies, dominant_magnitudes), 
-                               key=lambda x: x[1], reverse=True)[:5]:
-            noise_sig = self._classify_noise_by_frequency(freq, mag, y, sr)
-            if noise_sig.confidence > 0.3:
-                detected_noises.append(noise_sig)
-        
-        return {
-            'dominant_noises': detected_noises,
-            'dominant_frequencies': dominant_frequencies[:10],
-            'spectral_peaks': properties['peak_heights'][:10] if len(properties['peak_heights']) > 0 else []
-        }
-    
-    def _classify_noise_by_frequency(self, freq: float, magnitude: float, 
-                                     y: np.ndarray, sr: int) -> NoiseSignature:
-        """Classify noise based on frequency characteristics"""
-        
-        # Determine category and confidence
+        avg_mag = np.mean(magnitude, axis=1)
+        peaks, props = signal.find_peaks(avg_mag, height=np.percentile(avg_mag, 70), distance=5)
+        dom_freqs = freqs[peaks]
+        dom_mags = avg_mag[peaks]
+        noises = []
+        for freq, mag in sorted(zip(dom_freqs, dom_mags), key=lambda x: x[1], reverse=True)[:5]:
+            ns = self._classify_noise_by_frequency(freq, mag, y, sr)
+            if ns.confidence > 0.3:
+                noises.append(ns)
+        return {'dominant_noises': noises, 'dominant_frequencies': dom_freqs[:10]}
+
+    def _classify_noise_by_frequency(self, freq, magnitude, y, sr) -> NoiseSignature:
         if freq < 100:
-            category = NoiseCategory.MACHINERY
-            name = "Low-frequency machinery or hum"
-            confidence = 0.7 if self._has_harmonic_structure(y, sr, freq) else 0.5
+            cat, conf = NoiseCategory.MACHINERY, 0.7 if self._has_harmonic_structure(y, sr, freq) else 0.5
         elif freq < 500:
-            category = NoiseCategory.TRAFFIC
-            name = "Engine or vehicle noise"
-            confidence = 0.6
+            cat, conf = NoiseCategory.TRAFFIC, 0.6
         elif freq < 1500:
-            category = NoiseCategory.SPEECH
-            name = "Human speech frequencies"
-            confidence = 0.75 if self._detect_speech_modulation(y, sr) else 0.4
+            cat, conf = NoiseCategory.SPEECH, 0.75 if self._detect_speech_modulation(y, sr) else 0.4
         elif freq < 3000:
-            category = NoiseCategory.ENVIRONMENTAL
-            name = "Wind, rain, or environmental sound"
-            confidence = 0.65
+            cat, conf = NoiseCategory.ENVIRONMENTAL, 0.65
         else:
-            category = NoiseCategory.STRUCTURAL
-            name = "High-frequency impact or friction"
-            confidence = 0.6
-        
-        # Harmonic content
-        harmonics = self._extract_harmonics(y, sr, freq)
-        
+            cat, conf = NoiseCategory.STRUCTURAL, 0.6
         return NoiseSignature(
-            category=category,
+            category=cat,
             frequency_range=(max(0, freq - 200), freq + 200),
             temporal_pattern=self._analyze_temporal_pattern(y, sr, freq),
             intensity_level=float(magnitude),
-            confidence=confidence,
-            harmonic_content=harmonics,
-            spectral_shape=self._characterize_spectral_shape(y, sr, freq)
+            confidence=conf,
+            harmonic_content=self._extract_harmonics(y, sr, freq),
+            spectral_shape=self._characterize_spectral_shape(y, sr, freq),
         )
-    
-    def _has_harmonic_structure(self, y: np.ndarray, sr: int, fundamental: float) -> bool:
-        """Detect presence of harmonic overtones"""
+
+    def _has_harmonic_structure(self, y, sr, fundamental) -> bool:
         D = librosa.stft(y, n_fft=self.n_fft, hop_length=self.hop_length)
-        magnitude = np.abs(D)
+        mag = np.abs(D)
         freqs = librosa.fft_frequencies(sr=sr, n_fft=self.n_fft)
-        
-        # Check for harmonics at 2f, 3f, 4f
-        harmonic_energy = 0
-        for harmonic in [2, 3, 4]:
-            target_freq = fundamental * harmonic
-            idx = np.argmin(np.abs(freqs - target_freq))
-            harmonic_energy += np.mean(magnitude[idx, :])
-        
-        fundamental_idx = np.argmin(np.abs(freqs - fundamental))
-        fundamental_energy = np.mean(magnitude[fundamental_idx, :])
-        
-        return harmonic_energy > (0.3 * fundamental_energy)
-    
-    def _detect_speech_modulation(self, y: np.ndarray, sr: int) -> bool:
-        """Detect characteristic speech amplitude modulation"""
-        # Speech typically has 4-8 Hz modulation
+        h_energy = sum(np.mean(mag[np.argmin(np.abs(freqs - fundamental * h)), :]) for h in [2, 3, 4])
+        f_energy = np.mean(mag[np.argmin(np.abs(freqs - fundamental)), :])
+        return h_energy > 0.3 * f_energy
+
+    def _detect_speech_modulation(self, y, sr) -> bool:
         rms = librosa.feature.rms(y=y)[0]
-        
-        # Analyze modulation frequency
-        freqs_mod = np.fft.fftfreq(len(rms), d=1/(sr/512))
-        magnitude_mod = np.abs(np.fft.fft(rms))
-        
-        # Look for peak in 4-8 Hz range
-        speech_band = (freqs_mod > 4) & (freqs_mod < 8)
-        if np.any(speech_band) and np.max(magnitude_mod[speech_band]) > np.percentile(magnitude_mod, 70):
-            return True
-        return False
-    
-    def _extract_harmonics(self, y: np.ndarray, sr: int, fundamental: float) -> List[float]:
-        """Extract harmonic content"""
+        freqs_mod = np.fft.fftfreq(len(rms), d=1 / (sr / 512))
+        mag_mod = np.abs(np.fft.fft(rms))
+        band = (freqs_mod > 4) & (freqs_mod < 8)
+        return bool(np.any(band) and np.max(mag_mod[band]) > np.percentile(mag_mod, 70))
+
+    def _extract_harmonics(self, y, sr, fundamental) -> List[float]:
         D = librosa.stft(y, n_fft=self.n_fft, hop_length=self.hop_length)
-        magnitude = np.abs(D)
+        mag = np.abs(D)
         freqs = librosa.fft_frequencies(sr=sr, n_fft=self.n_fft)
-        
-        harmonics = []
-        for harmonic in range(1, 6):
-            target_freq = fundamental * harmonic
-            if target_freq < sr / 2:
-                idx = np.argmin(np.abs(freqs - target_freq))
-                harmonics.append(float(np.mean(magnitude[idx, :])))
-        
-        return harmonics
-    
-    def _analyze_temporal_pattern(self, y: np.ndarray, sr: int, freq: float) -> str:
-        """Characterize how the noise evolves over time"""
-        # Band-pass filter around frequency
-        sos = signal.butter(4, [freq - 100, freq + 100], btype='band', 
-                           fs=sr, output='sos')
-        filtered = signal.sosfilt(sos, y)
-        
-        # Analyze envelope
-        analytic = signal.hilbert(filtered)
-        envelope = np.abs(analytic)
-        
-        # Characteristics
-        envelope_mean = np.mean(envelope)
-        envelope_std = np.std(envelope)
-        variability = envelope_std / (envelope_mean + 1e-8)
-        
-        # Classify pattern
-        if variability < 0.3:
-            return "continuous_steady"
-        elif variability < 0.6:
-            return "continuous_variable"
-        elif variability < 1.0:
-            return "intermittent_bursty"
-        else:
-            return "impulsive_sporadic"
-    
-    def _characterize_spectral_shape(self, y: np.ndarray, sr: int, center_freq: float) -> str:
-        """Describe spectral envelope shape"""
+        result = []
+        for h in range(1, 6):
+            target = fundamental * h
+            if target < sr / 2:
+                idx = np.argmin(np.abs(freqs - target))
+                result.append(float(np.mean(mag[idx, :])))
+        return result
+
+    def _analyze_temporal_pattern(self, y, sr, freq) -> str:
+        low = max(freq - 100, 1)
+        high = min(freq + 100, sr / 2 - 1)
+        try:
+            sos = signal.butter(4, [low, high], btype='band', fs=sr, output='sos')
+            filtered = signal.sosfilt(sos, y)
+            envelope = np.abs(signal.hilbert(filtered))
+            variability = np.std(envelope) / (np.mean(envelope) + 1e-8)
+        except Exception:
+            variability = 0.5
+        if variability < 0.3: return "continuous_steady"
+        if variability < 0.6: return "continuous_variable"
+        if variability < 1.0: return "intermittent_bursty"
+        return "impulsive_sporadic"
+
+    def _characterize_spectral_shape(self, y, sr, center_freq) -> str:
         D = librosa.stft(y, n_fft=self.n_fft, hop_length=self.hop_length)
-        magnitude = np.abs(D)
+        mag = np.abs(D)
         freqs = librosa.fft_frequencies(sr=sr, n_fft=self.n_fft)
-        
-        # Analyze around center frequency
         mask = (freqs > center_freq - 500) & (freqs < center_freq + 500)
-        local_spectrum = magnitude[mask, :].mean(axis=1)
-        
-        # Shape analysis
-        if np.std(local_spectrum) / (np.mean(local_spectrum) + 1e-8) < 0.3:
-            return "flat_broadband"
-        elif np.argmax(local_spectrum) < len(local_spectrum) // 2:
-            return "rising_highpass"
-        elif np.argmax(local_spectrum) > len(local_spectrum) // 2:
-            return "falling_lowpass"
-        else:
-            return "peaked_narrowband"
-    
-    def _analyze_background_noise(self, y: np.ndarray, sr: int) -> Dict[str, float]:
-        """Detailed background noise characterization"""
-        # Estimate noise floor using spectral subtraction
+        local = mag[mask, :].mean(axis=1)
+        if len(local) == 0: return "flat_broadband"
+        if np.std(local) / (np.mean(local) + 1e-8) < 0.3: return "flat_broadband"
+        if np.argmax(local) < len(local) // 2: return "rising_highpass"
+        if np.argmax(local) > len(local) // 2: return "falling_lowpass"
+        return "peaked_narrowband"
+
+    def _analyze_background_noise(self, y, sr) -> Dict:
         D = librosa.stft(y, n_fft=self.n_fft, hop_length=self.hop_length)
-        magnitude = np.abs(D)
-        
-        # Noise floor is typically lower 10% of spectrum
-        noise_floor_db = np.percentile(librosa.power_to_db(magnitude**2, ref=np.max), 10)
-        
-        # Signal power
-        signal_power = np.mean(librosa.power_to_db(magnitude**2, ref=np.max))
-        
-        # SNR calculation
-        snr = signal_power - noise_floor_db
-        
-        return {
-            'noise_floor': float(noise_floor_db),
-            'signal_power': float(signal_power),
-            'snr': float(snr),
-            'dynamic_range': float(signal_power - noise_floor_db)
-        }
-    
-    def _infer_spatial_characteristics(self, y: np.ndarray, sr: int) -> Dict[str, Any]:
-        """Infer room characteristics and spatial properties"""
-        # Estimate reverberation through decay analysis
+        mag = np.abs(D)
+        noise_floor = float(np.percentile(librosa.power_to_db(mag ** 2, ref=np.max), 10))
+        signal_power = float(np.mean(librosa.power_to_db(mag ** 2, ref=np.max)))
+        return {'noise_floor': noise_floor, 'signal_power': signal_power, 'snr': float(signal_power - noise_floor)}
+
+    def _infer_spatial_characteristics(self, y, sr) -> Dict:
         S = librosa.feature.melspectrogram(y=y, sr=sr)
         S_db = librosa.power_to_db(S, ref=np.max)
-        
-        # Energy decay curve
         energy = np.mean(S_db, axis=0)
-        decay_slope = np.polyfit(range(len(energy)), energy, 1)[0]
-        
-        # Estimate RT60 (reverberation time)
-        rt60 = self._estimate_rt60(y, sr) if len(y) > sr else 0
-        
+        decay_slope = float(np.polyfit(range(len(energy)), energy, 1)[0])
+        rt60 = self._estimate_rt60(y, sr) if len(y) > sr else 0.2
         return {
             'reverberation_time_estimated_ms': float(rt60 * 1000),
-            'decay_slope': float(decay_slope),
-            'acoustic_environment': self._classify_acoustic_environment(rt60, decay_slope),
+            'decay_slope': decay_slope,
+            'acoustic_environment': self._classify_acoustic_environment(rt60),
             'room_size_estimate': self._estimate_room_size(rt60),
-            'echo_presence': self._detect_echo(y, sr)
+            'echo_presence': self._detect_echo(y, sr),
         }
-    
-    def _estimate_rt60(self, y: np.ndarray, sr: int, freq_band: Tuple[int, int] = (100, 2000)) -> float:
-        """Estimate reverberation time (RT60)"""
-        # Band-pass filter
-        sos = signal.butter(4, freq_band, btype='band', fs=sr, output='sos')
-        filtered = signal.sosfilt(sos, y)
-        
-        # Energy envelope
-        rms = librosa.feature.rms(y=filtered)[0]
-        rms_db = librosa.power_to_db(rms**2, ref=np.max)
-        
-        # Find where it drops 60dB (RT60)
-        if len(rms_db) > 100:
-            peak_idx = np.argmax(rms_db)
-            peak_level = rms_db[peak_idx]
-            
-            # Find point 60dB below peak
-            target_level = peak_level - 60
-            indices = np.where(rms_db[peak_idx:] < target_level)[0]
-            
-            if len(indices) > 0:
-                rt60_frames = indices[0]
-                rt60_seconds = librosa.frames_to_time(rt60_frames, sr=sr, hop_length=512)
-                return max(0.01, min(rt60_seconds, 10.0))  # Clamp between 10ms and 10s
-        
-        return 0.2  # Default estimate
-    
-    def _classify_acoustic_environment(self, rt60: float, decay_slope: float) -> str:
-        """Classify environment based on acoustic characteristics"""
-        if rt60 < 0.15:
-            return "dead_anechoic"
-        elif rt60 < 0.5:
-            return "acoustic_treated"
-        elif rt60 < 1.5:
-            return "normal_office_room"
-        elif rt60 < 3.0:
-            return "large_room_hall"
-        else:
-            return "highly_reverberant"
-    
-    def _estimate_room_size(self, rt60: float) -> str:
-        """Estimate room dimensions from RT60"""
-        if rt60 < 0.3:
-            return "very_small_close_talk"
-        elif rt60 < 0.7:
-            return "small_room_office"
-        elif rt60 < 1.5:
-            return "medium_room"
-        elif rt60 < 3.0:
-            return "large_room"
-        else:
-            return "very_large_space"
-    
-    def _detect_echo(self, y: np.ndarray, sr: int) -> bool:
-        """Detect presence of discrete echo"""
-        # Autocorrelation analysis
-        correlation = np.correlate(y, y, mode='full')
-        correlation = correlation[len(correlation)//2:]
-        correlation_normalized = correlation / correlation[0]
-        
-        # Look for secondary peaks (echo)
-        echo_region = correlation_normalized[sr//10:sr]  # 100ms to 1s
-        if len(echo_region) > 0:
-            max_secondary = np.max(echo_region)
-            return max_secondary > 0.5
-        return False
-    
-    def _calculate_acoustic_complexity(self, spectral_features: Dict) -> float:
-        """Measure overall complexity of acoustic scene"""
-        mel_db = spectral_features['mel_db']
-        
-        # Entropy-based complexity
-        # Normalize to probability distribution
-        mel_normalized = mel_db - np.min(mel_db)
-        mel_normalized = mel_normalized / (np.max(mel_normalized) + 1e-8)
-        
-        # Calculate entropy across frequency bands
-        entropy_freq = -np.sum(mel_normalized * np.log(mel_normalized + 1e-8), axis=0)
-        entropy_time = -np.sum(mel_normalized * np.log(mel_normalized + 1e-8), axis=1)
-        
-        # Temporal variability
-        temporal_var = np.std(np.diff(np.mean(mel_db, axis=0)))
-        
-        # Combined complexity score (0-1)
-        complexity = (np.mean(entropy_freq) + np.mean(entropy_time) + temporal_var) / 30.0
-        return float(np.clip(complexity, 0, 1))
-    
-    def _determine_environmental_context(self, noise_analysis: Dict, spectral_features: Dict,
-                                        temporal_features: Dict, spatial_info: Dict) -> str:
-        """Generate contextual interpretation of environment"""
-        dominant_noises = noise_analysis['dominant_noises']
-        
-        if len(dominant_noises) == 0:
-            return "Silent or very quiet environment"
-        
-        # Analyze context from dominant noises
-        categories = [n.category for n in dominant_noises[:3]]
-        
-        context_map = {
+
+    def _estimate_rt60(self, y, sr, freq_band=(100, 2000)) -> float:
+        try:
+            sos = signal.butter(4, freq_band, btype='band', fs=sr, output='sos')
+            filtered = signal.sosfilt(sos, y)
+            rms = librosa.feature.rms(y=filtered)[0]
+            rms_db = librosa.power_to_db(rms ** 2, ref=np.max)
+            if len(rms_db) > 100:
+                peak_idx = int(np.argmax(rms_db))
+                indices = np.where(rms_db[peak_idx:] < rms_db[peak_idx] - 60)[0]
+                if len(indices):
+                    return float(np.clip(librosa.frames_to_time(indices[0], sr=sr, hop_length=512), 0.01, 10.0))
+        except Exception:
+            pass
+        return 0.2
+
+    def _classify_acoustic_environment(self, rt60) -> str:
+        if rt60 < 0.15: return "dead_anechoic"
+        if rt60 < 0.5:  return "acoustic_treated"
+        if rt60 < 1.5:  return "normal_office_room"
+        if rt60 < 3.0:  return "large_room_hall"
+        return "highly_reverberant"
+
+    def _estimate_room_size(self, rt60) -> str:
+        if rt60 < 0.3: return "very_small_close_talk"
+        if rt60 < 0.7: return "small_room_office"
+        if rt60 < 1.5: return "medium_room"
+        if rt60 < 3.0: return "large_room"
+        return "very_large_space"
+
+    def _detect_echo(self, y, sr) -> bool:
+        corr = np.correlate(y, y, mode='full')
+        corr = corr[len(corr) // 2:]
+        corr_norm = corr / (corr[0] + 1e-8)
+        region = corr_norm[sr // 10:sr]
+        return bool(len(region) > 0 and np.max(region) > 0.5)
+
+    def _calculate_acoustic_complexity(self, sf) -> float:
+        mel_db = sf['mel_db']
+        mel_n = mel_db - np.min(mel_db)
+        mel_n = mel_n / (np.max(mel_n) + 1e-8)
+        ef = -np.sum(mel_n * np.log(mel_n + 1e-8), axis=0)
+        et = -np.sum(mel_n * np.log(mel_n + 1e-8), axis=1)
+        tv = np.std(np.diff(np.mean(mel_db, axis=0)))
+        return float(np.clip((np.mean(ef) + np.mean(et) + tv) / 30.0, 0, 1))
+
+    def _determine_environmental_context(self, na, sf, tf, si) -> str:
+        noises = na['dominant_noises']
+        if not noises: return "Silent or very quiet environment"
+        ctx_map = {
             NoiseCategory.TRAFFIC: "Urban/Traffic environment",
             NoiseCategory.MACHINERY: "Industrial/Factory setting",
             NoiseCategory.SPEECH: "Social/Communication context",
             NoiseCategory.ENVIRONMENTAL: "Outdoor/Natural environment",
             NoiseCategory.AMBIENT: "General ambient background",
-            NoiseCategory.STRUCTURAL: "Building/Indoor space"
+            NoiseCategory.STRUCTURAL: "Building/Indoor space",
         }
-        
-        # Combine categories
-        if categories:
-            primary = categories[0]
-            context_text = context_map.get(primary, "General environment")
-            
-            # Add spatial information
-            room_info = spatial_info['acoustic_environment']
-            if room_info != "dead_anechoic":
-                context_text += f" with {room_info} characteristics"
-            
-            # Add SNR information
-            if noise_analysis.get('snr', 0) < 10:
-                context_text += ", high background noise"
-            
-            return context_text
-        
-        return "Indeterminate environment"
-    
-    def _identify_risk_factors(self, noise_analysis: Dict, background_profile: Dict) -> List[str]:
-        """Identify acoustic hazards and quality concerns"""
+        ctx = ctx_map.get(noises[0].category, "General environment")
+        room = si.get('acoustic_environment', 'dead_anechoic')
+        if room != 'dead_anechoic':
+            ctx += f" with {room} characteristics"
+        return ctx
+
+    def _identify_risk_factors(self, na, bp) -> List[str]:
         risks = []
-        
-        # High noise exposure
-        if background_profile.get('noise_floor', 0) > -20:
-            risks.append("High background noise levels - potential hearing hazard")
-        
-        # Low SNR
-        if background_profile.get('snr', 0) < 5:
-            risks.append("Poor signal-to-noise ratio - difficulty understanding speech")
-        
-        # Dominant low frequencies (machinery)
-        dominant_noises = noise_analysis.get('dominant_noises', [])
-        if any(n.category == NoiseCategory.MACHINERY for n in dominant_noises):
-            risks.append("Industrial noise presence - occupational exposure concern")
-        
-        # Impulsive noises
-        if any(n.temporal_pattern == 'impulsive_short' for n in dominant_noises):
-            risks.append("Impulsive noise events - sudden acoustic transients present")
-        
-        # High spectral complexity
-        if len(dominant_noises) > 5:
+        if bp.get('noise_floor', 0) > -20:
+            risks.append("High background noise levels — potential hearing hazard")
+        if bp.get('snr', 0) < 5:
+            risks.append("Poor signal-to-noise ratio — difficulty understanding speech")
+        if any(n.category == NoiseCategory.MACHINERY for n in na.get('dominant_noises', [])):
+            risks.append("Industrial noise presence — occupational exposure concern")
+        if len(na.get('dominant_noises', [])) > 5:
             risks.append("Complex multi-source acoustic environment")
-        
         return risks
-    
-    def _assess_audio_quality(self, y: np.ndarray, sr: int, 
-                             spectral_features: Dict) -> Dict[str, float]:
-        """Assess recording and environmental quality"""
-        mel_db = spectral_features['mel_db']
-        
-        # Dynamic range
-        dynamic_range = np.max(mel_db) - np.min(mel_db)
-        
-        # Clipping detection
-        clipping_ratio = np.sum(np.abs(y) > 0.99) / len(y)
-        
-        # Noise uniformity (lower is better - indicates noise floor)
-        noise_uniformity = np.std(np.min(mel_db, axis=0))
-        
-        # Spectral balance
-        low_freq = np.mean(mel_db[:20, :])
-        mid_freq = np.mean(mel_db[50:80, :])
-        high_freq = np.mean(mel_db[100:, :])
-        spectral_balance = 1.0 - (np.std([low_freq, mid_freq, high_freq]) / (np.mean([low_freq, mid_freq, high_freq]) + 1e-8))
-        
+
+    def _assess_audio_quality(self, y, sr, sf) -> Dict:
+        mel_db = sf['mel_db']
+        low = np.mean(mel_db[:20, :])
+        mid = np.mean(mel_db[50:80, :])
+        high = np.mean(mel_db[100:, :])
+        balance = float(np.clip(
+            1.0 - np.std([low, mid, high]) / (np.mean([low, mid, high]) + 1e-8), 0, 1
+        ))
         return {
-            'dynamic_range_db': float(dynamic_range),
-            'clipping_ratio': float(clipping_ratio),
-            'noise_floor_uniformity': float(noise_uniformity),
-            'spectral_balance_score': float(np.clip(spectral_balance, 0, 1))
+            'dynamic_range_db': float(np.max(mel_db) - np.min(mel_db)),
+            'clipping_ratio': float(np.sum(np.abs(y) > 0.99) / len(y)),
+            'noise_floor_uniformity': float(np.std(np.min(mel_db, axis=0))),
+            'spectral_balance_score': balance,
         }
-    
-    def _estimate_attack_time(self, rms: np.ndarray) -> float:
-        """Estimate sound attack time"""
+
+    def _estimate_attack_time(self, rms) -> float:
         if len(rms) > 10:
-            peak_idx = np.argmax(rms)
-            if peak_idx > 5:
-                attack = np.mean(np.diff(rms[:peak_idx]))
-                return float(attack)
+            pk = int(np.argmax(rms))
+            if pk > 5: return float(np.mean(np.diff(rms[:pk])))
         return 0.0
-    
-    def _estimate_decay_time(self, rms: np.ndarray) -> float:
-        """Estimate sound decay time"""
+
+    def _estimate_decay_time(self, rms) -> float:
         if len(rms) > 10:
-            peak_idx = np.argmax(rms)
-            if peak_idx < len(rms) - 5:
-                decay = np.mean(np.diff(rms[peak_idx:]))
-                return float(decay)
+            pk = int(np.argmax(rms))
+            if pk < len(rms) - 5: return float(np.mean(np.diff(rms[pk:])))
         return 0.0
-    
-    # ============================================================================
-    # OPENAI GPT REASONING SYSTEM
-    # ============================================================================
-    
-    from openai import OpenAI
-    import os
-    
-    class OpenAIReasoningMixin:
-    
-        def setup_openai(self):
-            """
-            Initialize OpenAI client
-            """
-    
-            self.openai_client = OpenAI(
-                api_key=os.getenv("OPENAI_API_KEY")
-            )
-    
-            self.openai_model = os.getenv(
-                "OPENAI_MODEL",
-                "gpt-4.1-mini"
-            )
-    
-        def reason_with_openai(
-            self,
-            context: Dict[str, Any],
-            risk_analysis: Dict[str, Any]
-        ) -> Dict[str, Any]:
-    
-            try:
-    
-                prompt = self._build_openai_prompt(
-                    context,
-                    risk_analysis
-                )
-    
-                response = self.openai_client.chat.completions.create(
-                    model=self.openai_model,
-    
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are an emergency audio reasoning AI.\n"
-                                "Analyze transcript, sound events, emotions, "
-                                "and semantic risk signals.\n"
-                                "Be factual, evidence-based, and structured.\n"
-                                "Do not hallucinate details.\n"
-                                "Return valid JSON only."
-                            )
-                        },
-    
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-    
-                    temperature=0.2,
-                    max_tokens=700
-                )
-    
-                response_text = response.choices[0].message.content
-    
-                return self._parse_openai_response(
-                    response_text,
-                    risk_analysis
-                )
-    
-            except Exception as e:
-    
-                import warnings
-    
-                warnings.warn(
-                    f"OpenAI reasoning failed: {str(e)}"
-                )
-    
-                return self._fallback_reasoning(
-                    context,
-                    risk_analysis,
-                    reason=f"OpenAI API failed: {str(e)}"
-                )
-    
-        def _build_openai_prompt(
-            self,
-            context: Dict[str, Any],
-            risk_analysis: Dict[str, Any]
-        ) -> str:
-    
-            transcript = context.get('speech', 'No speech')
-            emotion = context.get('emotion', 'neutral')
-            sounds = context.get('sounds', [])
-    
-            return f'''
-    Analyze this audio situation carefully.
-    
-    TRANSCRIPT:
-    {transcript}
-    
-    EMOTION:
-    {emotion}
-    
-    SOUND EVENTS:
-    {", ".join(sounds[:5]) if sounds else "None"}
-    
-    RISK ANALYSIS:
-    - Risk Level: {risk_analysis.get("risk_level")}
-    - Situation: {risk_analysis.get("situation_type")}
-    - Keywords: {risk_analysis.get("keywords_detected")}
-    
-    Return STRICT JSON:
-    
-    {{
-        "location": "...",
-        "people": "...",
-        "activity": "...",
-        "emotion": "...",
-        "risk_level": "low/moderate/high",
-        "confidence": 0.0,
-        "explanation": "..."
-    }}
-    '''
-    
-        def _parse_openai_response(
-            self,
-            response_text: str,
-            risk_analysis: Dict[str, Any]
-        ) -> Dict[str, Any]:
-    
-            import json
-    
-            try:
-    
-                cleaned = response_text.strip()
-    
-                if cleaned.startswith("```json"):
-                    cleaned = cleaned.replace("```json", "")
-                    cleaned = cleaned.replace("```", "")
-    
-                parsed = json.loads(cleaned)
-    
-                parsed["source"] = "openai_gpt"
-    
-                return parsed
-    
-            except Exception:
-    
-                return self._fallback_reasoning(
-                    {},
-                    risk_analysis,
-                    reason="Failed to parse OpenAI response"
-                )
-    
-        def generate_inference_v2(
-            self,
-            context: Dict[str, Any],
-            risk_analysis: Optional[Dict[str, Any]] = None
-        ) -> str:
-    
-            if risk_analysis is None:
-                risk_analysis = self._create_default_risk_analysis()
-    
-            reasoning_output = self.reason_with_openai(
-                context,
-                risk_analysis
-            )
-    
-            return self._format_reasoning_report(
-                reasoning_output,
-                risk_analysis
-            )
-# ============================================================================
-# REPORT GENERATION
-# ============================================================================
+
+    def get_model_info(self) -> Dict:
+        return {
+            'model_type': 'Audio Environment Analysis Engine + OpenRouter LLM Reasoning',
+            'reasoning_backend': 'OpenRouter AI API (OpenAI-compatible)',
+            'llm_model': self._model,
+            'base_url': self._base_url,
+            'sample_rate': self.sr,
+            'fft_window_size': self.n_fft,
+            'hop_length': self.hop_length,
+            'noise_categories': [c.value for c in NoiseCategory],
+            'reasoning_pipeline': 'Two-Layer (Acoustic + Semantic) → OpenRouter → Structured Report',
+        }
+
+
+# ── Report generator ──────────────────────────────────────────────────────────
 
 class AudioAnalysisReporter:
-    """Generate natural language reports from audio analysis"""
-    
     @staticmethod
     def generate_report(profile: AudioEnvironmentProfile) -> str:
-        """Create comprehensive narrative analysis"""
-        
-        report = []
-        
-        # Title
-        report.append("=" * 70)
-        report.append("AUDIO ENVIRONMENT ANALYSIS REPORT")
-        report.append("=" * 70)
-        report.append("")
-        
-        # Environmental Context
-        report.append("📍 ENVIRONMENTAL ASSESSMENT:")
-        report.append(f"   Context: {profile.environmental_context}")
-        report.append("")
-        
-        # Dominant Noise Sources
-        report.append("🔊 IDENTIFIED NOISE SOURCES:")
+        r = ["=" * 70, "AUDIO ENVIRONMENT ANALYSIS REPORT", "=" * 70, "",
+             "📍 ENVIRONMENTAL ASSESSMENT:", f"   Context: {profile.environmental_context}", "",
+             "🔊 IDENTIFIED NOISE SOURCES:"]
         if profile.dominant_noises:
-            for i, noise in enumerate(profile.dominant_noises, 1):
-                report.append(f"\n   [{i}] {noise.category.value.upper()}")
-                report.append(f"       Frequency Range: {noise.frequency_range[0]:.0f} - {noise.frequency_range[1]:.0f} Hz")
-                report.append(f"       Temporal Pattern: {noise.temporal_pattern}")
-                report.append(f"       Spectral Shape: {noise.spectral_shape}")
-                report.append(f"       Intensity: {noise.intensity_level:.2f}")
-                report.append(f"       Confidence: {noise.confidence*100:.1f}%")
-                
-                if noise.harmonic_content:
-                    report.append(f"       Harmonic Structure Detected: {len([h for h in noise.harmonic_content if h > 0.01])} harmonics")
+            for i, n in enumerate(profile.dominant_noises, 1):
+                r += [f"\n   [{i}] {n.category.value.upper()}",
+                      f"       Freq Range  : {n.frequency_range[0]:.0f}–{n.frequency_range[1]:.0f} Hz",
+                      f"       Pattern     : {n.temporal_pattern}",
+                      f"       Intensity   : {n.intensity_level:.2f}",
+                      f"       Confidence  : {n.confidence * 100:.1f}%"]
         else:
-            report.append("   No significant noise sources detected")
-        report.append("")
-        
-        # Acoustic Quality Metrics
-        report.append("📊 ACOUSTIC MEASUREMENTS:")
-        report.append(f"   Background Noise Floor: {profile.background_noise_floor:.1f} dB")
-        report.append(f"   Signal-to-Noise Ratio: {profile.signal_to_noise_ratio:.1f} dB")
-        report.append(f"   Acoustic Complexity: {profile.acoustic_complexity*100:.1f}%")
-        report.append("")
-        
-        # Spatial Characteristics
-        report.append("🏠 SPATIAL CHARACTERISTICS:")
-        spatial = profile.spatial_characteristics
-        report.append(f"   Environment Type: {spatial.get('acoustic_environment', 'Unknown')}")
-        report.append(f"   Estimated Room Size: {spatial.get('room_size_estimate', 'Unknown')}")
-        report.append(f"   Reverberation Time (RT60): {spatial.get('reverberation_time_estimated_ms', 0):.0f} ms")
-        report.append(f"   Echo Detected: {'Yes' if spatial.get('echo_presence', False) else 'No'}")
-        report.append("")
-        
-        # Quality Assessment
-        report.append("✅ RECORDING QUALITY:")
-        quality = profile.quality_assessment
-        report.append(f"   Dynamic Range: {quality.get('dynamic_range_db', 0):.1f} dB")
-        report.append(f"   Clipping Level: {quality.get('clipping_ratio', 0)*100:.2f}%")
-        report.append(f"   Spectral Balance: {quality.get('spectral_balance_score', 0)*100:.1f}%")
-        report.append("")
-        
-        # Risk Assessment
-        report.append("⚠️  RISK & CONCERN FACTORS:")
+            r.append("   No significant noise sources detected")
+        r += ["", "📊 ACOUSTIC MEASUREMENTS:",
+              f"   Noise Floor : {profile.background_noise_floor:.1f} dB",
+              f"   SNR         : {profile.signal_to_noise_ratio:.1f} dB",
+              f"   Complexity  : {profile.acoustic_complexity * 100:.1f}%",
+              "", "🏠 SPATIAL CHARACTERISTICS:",
+              f"   Environment : {profile.spatial_characteristics.get('acoustic_environment', 'Unknown')}",
+              f"   Room Size   : {profile.spatial_characteristics.get('room_size_estimate', 'Unknown')}",
+              f"   RT60        : {profile.spatial_characteristics.get('reverberation_time_estimated_ms', 0):.0f} ms",
+              "", "✅ RECORDING QUALITY:",
+              f"   Dynamic Range: {profile.quality_assessment.get('dynamic_range_db', 0):.1f} dB",
+              f"   Clipping     : {profile.quality_assessment.get('clipping_ratio', 0) * 100:.2f}%",
+              "", "⚠️  RISK FACTORS:"]
         if profile.risk_factors:
-            for risk in profile.risk_factors:
-                report.append(f"   • {risk}")
+            r += [f"   • {rf}" for rf in profile.risk_factors]
         else:
-            report.append("   No significant risk factors identified")
-        report.append("")
-        
-        report.append("=" * 70)
-        
-        return "\n".join(report)
-
+            r.append("   None identified")
+        r += ["", "=" * 70]
+        return "\n".join(r)
