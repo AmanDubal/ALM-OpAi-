@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎵 ALM - Audio Language Model</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1>🎵 ALM</h1>
+                <p class="subtitle">Audio Language Model</p>
+                <p class="description">🧠 Powered by OpenRouter AI — Understand Audio with AI Intelligence</p>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <section class="upload-section">
+                <h2>📥 Upload Your Audio File</h2>
+                <div class="upload-box">
+                    <input type="file" id="audioFile" accept="audio/*" class="file-input">
+                    <label for="audioFile" class="file-label">
+                        <span>Click to upload or drag and drop</span>
+                        <small>Supported: WAV, MP3, M4A, FLAC, OGG (Max 50MB)</small>
+                    </label>
+                </div>
+                <button id="processBtn" class="btn btn-primary" disabled>
+                    <span>🚀 Process Audio</span>
+                </button>
+            </section>
+
+            <!-- Progress Section -->
+            <section id="progressSection" class="progress-section hidden">
+                <h2>Processing Pipeline</h2>
+                <div class="progress-steps">
+                    <div class="step" id="step1">
+                        <span class="step-emoji">📥</span>
+                        <span class="step-text">Loading & Preprocessing</span>
+                        <div class="step-progress"></div>
+                    </div>
+                    <div class="step" id="step2">
+                        <span class="step-emoji">🗣️</span>
+                        <span class="step-text">Speech Recognition</span>
+                        <div class="step-progress"></div>
+                    </div>
+                    <div class="step" id="step3">
+                        <span class="step-emoji">🔊</span>
+                        <span class="step-text">Sound Detection</span>
+                        <div class="step-progress"></div>
+                    </div>
+                    <div class="step" id="step4">
+                        <span class="step-emoji">😊</span>
+                        <span class="step-text">Emotion Analysis</span>
+                        <div class="step-progress"></div>
+                    </div>
+                    <div class="step" id="step5">
+                        <span class="step-emoji">🔗</span>
+                        <span class="step-text">Context Integration</span>
+                        <div class="step-progress"></div>
+                    </div>
+                    <div class="step" id="step6">
+                        <span class="step-emoji">🧠</span>
+                        <span class="step-text">AI Reasoning</span>
+                        <div class="step-progress"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section id="resultsSection" class="results-section hidden">
+                <h2>📊 Analysis Results</h2>
+                
+                <div class="result-card">
+                    <h3>⏱️ Audio Information</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <span class="metric-label">Duration</span>
+                            <span id="duration" class="metric-value">--</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Sample Rate</span>
+                            <span id="sampleRate" class="metric-value">--</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Peak Amplitude</span>
+                            <span id="peakAmplitude" class="metric-value">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="result-card">
+                    <h3>📝 Speech Recognition</h3>
+                    <div class="transcript-box">
+                        <p id="transcript">No speech detected</p>
+                    </div>
+                    <p class="language-tag">🌐 Language: <span id="language">--</span></p>
+                </div>
+
+                <div class="result-card">
+                    <h3>🔊 Sound Events Detected</h3>
+                    <div id="soundEvents" class="event-list">
+                        <p>No sound events detected</p>
+                    </div>
+                </div>
+
+                <div class="result-card">
+                    <h3>😊 Emotion Analysis</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <span class="metric-label">Emotion</span>
+                            <span id="emotion" class="metric-value">--</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Confidence</span>
+                            <span id="emotionConfidence" class="metric-value">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="result-card">
+                    <h3>🔗 Integrated Context</h3>
+                    <div class="context-box">
+                        <pre id="context">Loading context...</pre>
+                    </div>
+                </div>
+
+                <div class="result-card">
+                    <h3>🧠 AI Reasoning (OpenRouter)</h3>
+                    <div class="inference-box">
+                        <p id="inference">Generating inference...</p>
+                    </div>
+                </div>
+
+                <div class="action-buttons">
+                    <button id="downloadBtn" class="btn btn-secondary">📄 Download Results</button>
+                    <button id="newBtn" class="btn btn-primary">🔄 Process New Audio</button>
+                </div>
+            </section>
+
+            <!-- Error Section -->
+            <section id="errorSection" class="error-section hidden">
+                <div class="error-box">
+                    <h3>⚠️ Error</h3>
+                    <p id="errorMessage">An error occurred</p>
+                    <button id="errorCloseBtn" class="btn btn-secondary">Close</button>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>ALM © 2026 | Powered by OpenRouter AI | TensorFlow • Whisper • YAMNet</p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
